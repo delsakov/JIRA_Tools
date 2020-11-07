@@ -48,7 +48,7 @@ config_file = 'config.json'
 report_name = 'JIRA Export.xlsx'
 zoom_scale = 90
 jira_sheet_title = 'Items from JIRA'
-JIRA_BASE_URL = 'https://issuetracking.jira.com/jira'
+jira_base_url = 'https://issuetracking.jira.com/jira'
 jql = 'issuetype = Story'
 
 # Creation of Excel in-memory
@@ -92,7 +92,7 @@ def select_output_file():
 
 
 def create_excel_sheet(sheet_data, title):
-    global JIRA_BASE_URL
+    global jira_base_url
     wb.create_sheet(title)
     ws = wb.get_sheet_by_name(title)
     
@@ -105,7 +105,7 @@ def create_excel_sheet(sheet_data, title):
         for y in range(len(sheet_data[i])):
             if y in visible_cols:
                 if (y == excel_columns['ID']['index'] and start_row != 1 and sheet_data[i][y] is not None and sheet_data[i][y] != ''):
-                    ws.cell(row=start_row, column=start_column+y).hyperlink = JIRA_BASE_URL + '/browse/' + sheet_data[i][y]
+                    ws.cell(row=start_row, column=start_column+y).hyperlink = jira_base_url + '/browse/' + sheet_data[i][y]
                     ws.cell(row=start_row, column=start_column+y).font = hyperlink
                 ws.cell(row=start_row, column=start_column+y).value = sheet_data[i][y]
         start_row += 1
@@ -180,7 +180,7 @@ def get_columns():
 
 def get_issues_by_jql(jql):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
-    auth_jira = JIRA(JIRA_BASE_URL)
+    auth_jira = JIRA(jira_base_url)
     issues, items = ([], [])
     start_idx, block_num, block_size = (0, 0, 100)
     while True:
@@ -198,23 +198,23 @@ def get_issues_by_jql(jql):
 
 
 def main_program():
-    global output_excel, issues, input_excel, report_name, jql, aggregated_sheet, JIRA_BASE_URL
+    global output_excel, issues, input_excel, report_name, jql, aggregated_sheet, jira_base_url
     output_excel = out_xls.get().strip()
     if not output_excel.endswith('.xlsx'):
         output_excel += '.xlsx'
     report_name = output_excel
-    JIRA_BASE_URL = jira_instance.get().strip()
+    jira_base_url = jira_instance.get().strip()
     jql = j_query.get().strip()
     config_file = conf.get().strip().split('.json')[0] + '.json'
     if override_checkbox == 1:
         save_config(configfile=config_file)
     master.destroy()
-    if JIRA_BASE_URL == '':
+    if jira_base_url == '':
         print("JIRA URL has not been entered. Program stopped.")
         os.system("pause")
         exit()
     try:
-        jira = JIRA(JIRA_BASE_URL)
+        jira = JIRA(jira_base_url)
     except Exception as er:
         print("Exception with JIRA connection: {}".format(er))
         print("Program stopped.")
@@ -310,14 +310,14 @@ def main_program():
 
 
 def load_config(configfile=config_file):
-    global JIRA_BASE_URL, excel_columns, aggregated_sheet, jira_sheet_title, report_name, jql, output_excel
+    global jira_base_url, excel_columns, aggregated_sheet, jira_sheet_title, report_name, jql, output_excel
     if os.path.exists(configfile) is True:
         try:
             with open(configfile) as json_data_file:
                 data = json.load(json_data_file)
             for k, v in data.items():
-                if k == 'JIRA_BASE_URL':
-                    JIRA_BASE_URL = v
+                if k == 'jira_base_url':
+                    jira_base_url = v
                 elif k == 'jql':
                     jql = v
                 elif k == 'excel_columns':
@@ -343,7 +343,7 @@ def load_config(configfile=config_file):
 
 
 def save_config(configfile=config_file):
-    data = {'JIRA_BASE_URL': JIRA_BASE_URL,
+    data = {'jira_base_url': jira_base_url,
             'jql': jql,
             'jira_sheet_title': jira_sheet_title,
             # 'aggregated_sheet': aggregated_sheet,
@@ -393,7 +393,7 @@ def open_file():
         j_query.delete(0, END)
         j_query.insert(0, jql)
         jira_instance.delete(0, END)
-        jira_instance.insert(0, JIRA_BASE_URL)
+        jira_instance.insert(0, jira_base_url)
         out_xls.delete(0, END)
         out_xls.insert(0, report_name)
         add_aggregated.set(aggregated_sheet['visible'])
@@ -415,7 +415,7 @@ tk.Label(master, text="JQL for Export:", font=("Helvetica", 9)).grid(row=3, colu
 tk.Label(master, text="Report File:").grid(row=4, column=0, pady=2, padx=3)
 
 jira_instance = tk.Entry(master, width=70)
-jira_instance.insert(END, JIRA_BASE_URL)
+jira_instance.insert(END, jira_base_url)
 jira_instance.grid(row=2, column=1, padx=0, sticky=W, columnspan=2)
 
 j_query = tk.Entry(master, width=70)
