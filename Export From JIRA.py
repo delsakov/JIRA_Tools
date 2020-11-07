@@ -404,13 +404,11 @@ def open_file():
 # ------------------ MAIN PROGRAM -----------------------------------
 # load_config()
 print("Program started. Please DO NOT CLOSE this window...")
-print("Please IGNORE any WARNINGS - the connection issues are covered by Retry logic.")
 print()
 
 master = tk.Tk()
 Title = master.title("JIRA Export Tool")
 tk.Label(master, text="Please enter JIRA instance URL and required JQL for export. Specify Report File Name.", font=("Helvetica", 10)).grid(row=0, column=0, pady=5, columnspan=3)
-# tk.Label(master, text="If JIRA instance do NOT support Read-Only access, please enter Desktop Credentials.", font=("Helvetica", 10)).grid(row=1, column=0, pady=0, columnspan=3)
 
 tk.Label(master, text="JIRA Instance URL:").grid(row=2, column=0, pady=2, padx=3)
 tk.Label(master, text="JQL for Export:", font=("Helvetica", 9)).grid(row=3, column=0, pady=2, padx=3)
