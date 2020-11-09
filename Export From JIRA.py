@@ -32,9 +32,10 @@ excel_columns = {'ID': {'index': 0, 'visible': 1, 'name': 'ID'},
                  'Due Date': {'index': 9, 'visible': 1, 'name': 'Due Date'},
                  'Parent': {'index': 10, 'visible': 1, 'name': 'Parent'},
                  'Priority': {'index': 11, 'visible': 1, 'name': 'Priority'},
-                 'Description': {'index': 14, 'visible': 1, 'name': 'Description'},
                  'Created': {'index': 12, 'visible': 1, 'name': 'Created'},
                  'Updated': {'index': 13, 'visible': 1, 'name': 'Updated'},
+                 'Linked Issues': {'index': 14, 'visible': 1, 'name': 'Linked Issues'},
+                 'Description': {'index': 15, 'visible': 1, 'name': 'Description'},
                  }
 
 # For Aggregated Excel Sheet, if applicable
@@ -107,7 +108,15 @@ def create_excel_sheet(sheet_data, title):
                 if (y == excel_columns['ID']['index'] and start_row != 1 and sheet_data[i][y] is not None and sheet_data[i][y] != ''):
                     ws.cell(row=start_row, column=start_column+y).hyperlink = jira_base_url + '/browse/' + sheet_data[i][y]
                     ws.cell(row=start_row, column=start_column+y).font = hyperlink
-                ws.cell(row=start_row, column=start_column+y).value = sheet_data[i][y]
+                try:
+                    ws.cell(row=start_row, column=start_column+y).value = sheet_data[i][y]
+                except:
+                  converted_value = ''
+                  for letter in sheet_data[i][y]:
+                      if letter.isalpha() or letter.isnumeric() or letter in [' ', ',', '.', '&', ':', ';', '"', "'", '/']:
+                          converted_value += letter
+                      else:
+                          converted_value += '?'
         start_row += 1
     
     for y in range(1, ws.max_column+1):
@@ -271,6 +280,13 @@ def main_program():
                     details[excel_columns['Priority']['index']] = issue.fields.priority.name
                     details[excel_columns['Created']['index']] = issue.fields.created.split('T')[0]
                     details[excel_columns['Updated']['index']] = issue.fields.updated.split('T')[0]
+                    l = []
+                    for link in issue.fields.issuelinks:
+                        if hasattr(link, "outwardIssue"):
+                            l.append(link.type.outward + ' ' + link.outwardIssue.key)
+                        if hasattr(link, "inwardIssue"):
+                            l.append(link.type.inward + ' ' + link.inwardIssue.key)
+                    details[excel_columns['Linked Issues']['index']] = get_str_from_lst(l)
                     # Extend list for Excel export
                     updated_issues[k].append(details)
                 except Exception as e:
