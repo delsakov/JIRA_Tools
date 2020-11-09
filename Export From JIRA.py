@@ -117,6 +117,7 @@ def create_excel_sheet(sheet_data, title):
                           converted_value += letter
                       else:
                           converted_value += '?'
+                  ws.cell(row=start_row, column=start_column+y).value = converted_value
         start_row += 1
     
     for y in range(1, ws.max_column+1):
