@@ -2040,6 +2040,8 @@ Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 
 process_old_linkage.trace('w', change_linking)
 
 tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=11, column=3, pady=4, rowspan=3, sticky=W)
-tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=20, column=0, pady=8, columnspan=4)
+tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=20, column=0, pady=8, columnspan=4, rowspan=2)
+
+tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=21, column=3, sticky=E, padx=10)
 
 tk.mainloop()
