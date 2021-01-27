@@ -2,7 +2,7 @@ from jira import JIRA
 from atlassian import jira
 from openpyxl import Workbook, load_workbook
 from openpyxl.workbook.defined_name import DefinedName
-from tkinter.filedialog import askopenfilename, asksaveasfilename
+from tkinter.filedialog import askopenfilename
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
 import datetime
@@ -1964,7 +1964,7 @@ print("[INFO] Please IGNORE any WARNINGS - the connection issues are covered by 
 print()
 
 main = tk.Tk()
-Title = main.title("JIRA Migration Tool")
+Title = main.title("JIRA Migration Tool" + " v_" + current_version)
 
 tk.Label(main, text="Generate new Mapping Template for JIRA migration:", foreground="black", font=("Helvetica", 11), pady=10).grid(row=0, column=0, columnspan=3, rowspan=2)
 tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=4, rowspan=2)
