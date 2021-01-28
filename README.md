@@ -1,7 +1,7 @@
 # JIRA_Tools
 This repository would contain some code for integration with JIRA.
-Note: Executable "compiled" files located in "distr"/ folder.
-Note 2: Please do not forget about licence - copyright is required.
+- Note: Executable "compiled" files located in "distr"/ folder.
+- Note 2: Please do not forget about licence - copyright is required.
 
 
 # JIRA Migration Tool
