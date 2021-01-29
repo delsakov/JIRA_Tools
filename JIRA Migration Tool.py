@@ -18,11 +18,11 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.1'
+current_version = '0.2'
 config_file = 'config.json'
 
 # JIRA Default configuration
-JIRA_BASE_URL_OLD =''
+JIRA_BASE_URL_OLD = ''
 project_old = ''
 JIRA_BASE_URL_NEW = ''
 project_new = ''
@@ -97,6 +97,7 @@ teams = {}
 last_updated_date = 'YYYY-MM-DD'
 updated_issues_num = 0
 threads = 1
+migrated_text = 'Migrated to'
 verbose_logging = 0
 detailed_logging = False
 migrate_fixversions_check = 1
@@ -679,7 +680,7 @@ def migrate_comments(old_issue, new_issue):
         new_data = eval("'*[' + comment.author.displayName + '|~' + comment.author.name + ']* added on *_' + comment.created[:10] + ' ' + comment.created[11:19] + '_*: \\\\\\ '")
         len_new_data = len(new_data)
         for new_comment in jira_new.comments(new_issue):
-            if comment.body == new_comment.body[len_new_data:]:
+            if comment.body == new_comment.body[len_new_data:] or comment.body == new_comment.body:
                 comment_match = 1
         if comment_match == 0:
             data = eval("new_data + comment.body")
@@ -813,13 +814,13 @@ def migrate_status(new_issue, old_issue):
 
 
 def migrate_issues(issuetype):
-    global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, threads
-    global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
+    global items_lst, threads
     
     def process_issue(key):
-        global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check
+        global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
         global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
 
+        new_issue_type = ''
         new_issue_key = project_new + '-' + key.split('-')[1]
         try:
             old_issue = jira_old.issue(key)
@@ -848,7 +849,7 @@ def migrate_issues(issuetype):
             remote_link_exist = 0
             try:
                 for r_link in jira_old.remote_links(old_issue.key):
-                    if r_link.object.title == new_issue.key and r_link.relationship == 'Migrated to':
+                    if r_link.object.title == new_issue.key and r_link.relationship == migrated_text:
                         remote_link_exist = 1
             except:
                 pass
@@ -1534,6 +1535,7 @@ def main_program():
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
+    global create_remote_link_for_old_issue
     
     username = user.get()
     password = passwd.get()
@@ -1553,7 +1555,8 @@ def main_program():
         try:
             jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, max_retries=2)
             jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, max_retries=2)
-            atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
+            if create_remote_link_for_old_issue == 1:
+                atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
@@ -1621,6 +1624,7 @@ def main_program():
     
     create_temp_folder(temp_dir_name)
     
+    # Sprints migration check
     if migrate_sprints_check == 1:
         if old_board_id == 0:
             migrate_sprints(proj_old=project_old)
@@ -1776,7 +1780,9 @@ def change_configs():
         if project_new == '':
             print("[ERROR] Target JIRA Project Key is empty.")
             validation_error = 1
-            
+
+        if start_jira_key == '':
+            start_jira_key = 1
         try:
             start_jira_key = int(start_jira_key.strip())
             if start_jira_key < 1:
@@ -1787,19 +1793,22 @@ def change_configs():
             except:
                 print("[ERROR] Start Issue Key is invalid.")
         
+        if limit_migration_data in ['', 'ALL']:
+            limit_migration_data = 0
         try:
             limit_migration_data = int(limit_migration_data.strip())
             if limit_migration_data < 0:
                 limit_migration_data = 0
-                print("[ERROR] Number of Total migrated issues can't be NEGATIVE. Defaulted to '0'.")
+                print("[ERROR] Number of Total migrated issues can't be NEGATIVE. Defaulted to '0' - 'ALL'.")
         except:
             print("[ERROR] Number of Total migrated issues is invalid. Default value for ALL would be used.")
             limit_migration_data = 0
         
         try:
             default_board_name = str(default_board_name.strip())
-            if default_board_name == '':
+            if default_board_name == '' and migrate_sprints_check == 1:
                 default_board_name = 'Shared Sprints'
+                print("[ERROR] Board Name for migrated Sprints can't be empty. Default Name '{}' will be used instead.".format(default_board_name))
         except:
             print("[ERROR] New Board name for migrated Sprints is invalid.")
             if migrate_sprints_check == 1:
@@ -1809,14 +1818,21 @@ def change_configs():
             if old_board_id != '':
                 old_board_id = int(old_board_id.strip())
         except:
-            print("[ERROR] Board ID for Sprints migration from Source JIRA in invalid. By default ALL Sprints will be migrated.")
+            if migrate_sprints_check == 1:
+                print("[ERROR] Board ID for Sprints migration from Source JIRA in invalid. By default ALL Sprints will be migrated.")
             old_board_id = 0
         
         try:
             team_project_prefix = str(team_project_prefix)
         except:
-            print("[ERROR] Prefix for Team names is invalid. Defailt '[{}] ' will be used.".format(project_old))
+            print("[ERROR] Prefix for Team names is invalid. Default '[{}] ' will be used.".format(project_old))
             team_project_prefix = '[' + project_old + '] '
+        
+        try:
+            threads = int(threads.strip())
+        except:
+            print("[ERROR] Parallel Threads number is invalid. Default '1' will be used.")
+            threads = 1
         
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
@@ -1891,7 +1907,9 @@ def change_configs():
     first_issue = tk.Entry(config_popup, width=20, textvariable=start_jira_key)
     first_issue.insert(END, start_jira_key)
     first_issue.grid(row=4, column=2, columnspan=1, padx=8)
-
+    
+    if limit_migration_data == 0:
+        limit_migration_data = 'ALL'
     limit_migration_data = check_similar("limit_migration_data", limit_migration_data)
     
     tk.Label(config_popup, text="Number for migration:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=4, column=3)
@@ -1922,7 +1940,7 @@ def change_configs():
     new_teams.insert(END, team_project_prefix)
     new_teams.grid(row=6, column=2, columnspan=1, padx=8)
 
-    old_board_id = check_similar("threads", threads)
+    threads = check_similar("threads", threads)
     
     tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
     threads_num = tk.Entry(config_popup, width=10, textvariable=threads)
