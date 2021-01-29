@@ -1175,8 +1175,8 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
 
 
 def load_config(message=True):
-    global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new
-    global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data
+    global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date
+    global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads
     if os.path.exists(config_file) is True:
         try:
             with open(config_file) as json_data_file:
@@ -1202,6 +1202,10 @@ def load_config(message=True):
                     temp_dir_name = v
                 elif k == 'limit_migration_data':
                     limit_migration_data = v
+                elif k == 'last_updated_date':
+                    last_updated_date = v
+                elif k == 'threads':
+                    threads = v
             if message is True:
                 print("[INFO] Configuration has been successfully loaded from '{}' file.".format(config_file))
         except Exception as er:
@@ -1228,6 +1232,8 @@ def save_config(message=True):
             'new_transitions': new_transitions,
             'temp_dir_name': temp_dir_name,
             'limit_migration_data': limit_migration_data,
+            'last_updated_date': last_updated_date,
+            'threads': threads,
             }
     
     try:
@@ -1821,53 +1827,54 @@ def change_configs():
         config_popup.destroy()
         config_popup.quit()
     
-    def check_similar(field):
+    def check_similar(field, value):
         ''' This function required for fixing same valu duplication issue for second Tk window '''
         global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
         
-        fields = [JIRA_BASE_URL_OLD,
-                  project_old,
-                  JIRA_BASE_URL_NEW,
-                  project_new,
-                  start_jira_key,
-                  limit_migration_data,
-                  default_board_name,
-                  old_board_id,
-                  team_project_prefix,
-                  validation_error,
-                  last_updated_date,
-                  threads]
-        if field in fields:
-            return check_similar(' ' + str(field))
+        fields = {"JIRA_BASE_URL_OLD": JIRA_BASE_URL_OLD,
+                  "project_old": project_old,
+                  "JIRA_BASE_URL_NEW": JIRA_BASE_URL_NEW,
+                  "project_new": project_new,
+                  "start_jira_key": start_jira_key,
+                  "limit_migration_data": limit_migration_data,
+                  "default_board_name": default_board_name,
+                  "old_board_id": old_board_id,
+                  "team_project_prefix": team_project_prefix,
+                  "validation_error": validation_error,
+                  "last_updated_date": last_updated_date,
+                  "threads": threads}
+        for f, v in fields.items():
+            if str(value) == str(v) and field != f:
+                return check_similar(field, ' ' + str(value))
         else:
-            return field
+            return value
     
     config_popup = tk.Tk()
     config_popup.title("JIRA Migration Tool - Configuration")
 
-    JIRA_BASE_URL_OLD = check_similar(JIRA_BASE_URL_OLD)
+    JIRA_BASE_URL_OLD = check_similar("JIRA_BASE_URL_OLD", JIRA_BASE_URL_OLD)
     
     tk.Label(config_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=0, rowspan=1)
     source_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_OLD)
     source_jira.insert(END, JIRA_BASE_URL_OLD)
     source_jira.grid(row=0, column=1, columnspan=2, padx=8)
 
-    project_old = check_similar(project_old)
+    project_old = check_similar("project_old", project_old)
     
     tk.Label(config_popup, text="Source Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=3, rowspan=1)
     source_project = tk.Entry(config_popup, width=16, textvariable=project_old)
     source_project.insert(END, project_old)
     source_project.grid(row=0, column=3, columnspan=2, padx=7, stick=E)
 
-    JIRA_BASE_URL_NEW = check_similar(JIRA_BASE_URL_NEW)
+    JIRA_BASE_URL_NEW = check_similar("JIRA_BASE_URL_NEW", JIRA_BASE_URL_NEW)
 
     tk.Label(config_popup, text="Target JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=1, column=0, rowspan=1)
     target_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_NEW)
     target_jira.insert(END, JIRA_BASE_URL_NEW)
     target_jira.grid(row=1, column=1, columnspan=2, padx=8)
 
-    project_new = check_similar(project_new)
+    project_new = check_similar("project_new", project_new)
     
     tk.Label(config_popup, text="Target Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=3, rowspan=1)
     target_project = tk.Entry(config_popup, width=16, textvariable=project_new)
@@ -1878,14 +1885,14 @@ def change_configs():
     
     tk.Label(config_popup, text="Detailed Configuration for migration. Defaults are '0' or empty for ALL Sprints / Issues:", foreground="black", font=("Helvetica", 11, "italic"), padx=10, wraplength=500).grid(row=3, column=0, columnspan=5)
 
-    start_jira_key = check_similar(start_jira_key)
+    start_jira_key = check_similar("start_jira_key", start_jira_key)
     
     tk.Label(config_popup, text="Start migration from (Issue Key or Number):", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=300).grid(row=4, column=0, columnspan=2)
     first_issue = tk.Entry(config_popup, width=20, textvariable=start_jira_key)
     first_issue.insert(END, start_jira_key)
     first_issue.grid(row=4, column=2, columnspan=1, padx=8)
 
-    limit_migration_data = check_similar(limit_migration_data)
+    limit_migration_data = check_similar("limit_migration_data", limit_migration_data)
     
     tk.Label(config_popup, text="Number for migration:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=4, column=3)
     migrated_number = tk.Entry(config_popup, width=10, textvariable=limit_migration_data)
@@ -1893,7 +1900,7 @@ def change_configs():
     migrated_number.insert(0, limit_migration_data)
     migrated_number.grid(row=4, column=4, columnspan=1, padx=8)
 
-    default_board_name = check_similar(default_board_name)
+    default_board_name = check_similar("default_board_name", default_board_name)
     
     tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=5, column=0, columnspan=2)
     new_board = tk.Entry(config_popup, width=20, textvariable=default_board_name)
@@ -1902,7 +1909,7 @@ def change_configs():
 
     if old_board_id == 0:
         old_board_id = ''
-    old_board_id = check_similar(old_board_id)
+    old_board_id = check_similar("old_board_id", old_board_id)
     
     tk.Label(config_popup, text="Sprints from Board ID only:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=5, column=3)
     old_board = tk.Entry(config_popup, width=10, textvariable=old_board_id)
@@ -1915,6 +1922,8 @@ def change_configs():
     new_teams.insert(END, team_project_prefix)
     new_teams.grid(row=6, column=2, columnspan=1, padx=8)
 
+    old_board_id = check_similar("threads", threads)
+    
     tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
     threads_num = tk.Entry(config_popup, width=10, textvariable=threads)
     threads_num.delete(0, END)
@@ -1924,7 +1933,7 @@ def change_configs():
     if last_updated_date == '':
         last_updated_date = 'YYYY-MM-DD'
 
-    last_updated_date = check_similar(last_updated_date)
+    last_updated_date = check_similar("last_updated_date", last_updated_date)
     
     tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=7, column=0, columnspan=4)
     last_updated = tk.Entry(config_popup, width=15, textvariable=last_updated_date)
