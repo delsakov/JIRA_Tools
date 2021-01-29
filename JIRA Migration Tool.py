@@ -2,19 +2,20 @@ from jira import JIRA
 from atlassian import jira
 from openpyxl import Workbook, load_workbook
 from openpyxl.workbook.defined_name import DefinedName
-from tkinter.filedialog import askopenfilename
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
-import datetime
 from sys import exit
-import tkinter as tk
 from tkinter import *
+from tkinter.filedialog import askopenfilename
+import tkinter as tk
 import os
+import datetime
 from time import sleep
 import requests
 from bs4 import BeautifulSoup
 import json
 import shutil
+import concurrent.futures
 
 # Migration Tool properties
 current_version = '0.1'
@@ -90,10 +91,12 @@ start_jira_key = 1
 create_remote_link_for_old_issue = 0
 username, password = ('', '')
 auth = (username, password)
-old_jira_issues = set()
 items_lst = {}
 sub_tasks = {}
 teams = {}
+last_updated_date = 'YYYY-MM-DD'
+updated_issues_num = 0
+threads = 1
 verbose_logging = 0
 detailed_logging = False
 migrate_fixversions_check = 1
@@ -106,6 +109,8 @@ migrate_links_check = 1
 migrate_teams_check = 1
 migrate_metadata_check = 1
 validation_error = 0
+delete_dummy_flag = 0
+skip_migrated_flag = 1
 
 # Mappings
 issuetypes_mappings = {}
@@ -407,7 +412,7 @@ def prepare_template_data():
 
 def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_result=limit_migration_data, issue_details=None):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
-    global old_sprints, old_jira_issues, items_lst, limit_migration_data, total_issues
+    global old_sprints, items_lst, limit_migration_data, total_issues
     print("[START] The list of all Issues are retrieving from JIRA.")
     auth_jira = jira
     issues, items = ([],[])
@@ -438,7 +443,8 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
     if types is not None:
         type_lst = list(set([i.fields.issuetype.name for i in issues]))
         for issuetype in type_lst:
-            items_lst[issuetype] = set()
+            if issuetype not in items_lst.keys():
+                items_lst[issuetype] = set()
         for i in issues:
             issue = auth_jira.issue(i.key)
             items_lst[i.fields.issuetype.name].add(issue.key)
@@ -446,11 +452,11 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
         type_lst = list(set([i.fields.issuetype.name for i in issues]))
         total_issues = len(issues)
         for issuetype in type_lst:
-            items_lst[issuetype] = set()
+            if issuetype not in items_lst.keys():
+                items_lst[issuetype] = set()
         print("[INFO] Sprint retrieval from project was started. It could take some time... Please wait...")
         for i in issues:
             issue = auth_jira.issue(i.key)
-            old_jira_issues.add(i.key)
             items_lst[i.fields.issuetype.name].add(issue.key)
             if sprint is not None:
                 issue_sprints = eval('issue.fields.' + sprint_field_id)
@@ -807,51 +813,61 @@ def migrate_status(new_issue, old_issue):
 
 
 def migrate_issues(issuetype):
-    global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check
+    global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, threads
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
+    
+    def process_issue(key):
+        global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check
+        global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
+
+        new_issue_key = project_new + '-' + key.split('-')[1]
+        try:
+            old_issue = jira_old.issue(key)
+        except:
+            return
+        try:
+            new_issue = jira_new.issue(new_issue_key)
+        except:
+            new_issue = create_dummy_issue(jira_new, project_new, get_minfields_issuetype(issue_details_new)[0], get_minfields_issuetype(issue_details_new)[1], old_issue)
+        if migrate_metadata_check == 1:
+            issue_type = old_issue.fields.issuetype.name
+            for issuetype, details in issuetypes_mappings.items():
+                if issue_type in details['issuetypes']:
+                    new_issue_type = issuetype
+                    break
+            update_new_issue_type(old_issue, new_issue, new_issue_type)
+        if migrate_comments_check == 1:
+            migrate_comments(old_issue, new_issue)
+        if migrate_links_check == 1:
+            migrate_links(old_issue, new_issue)
+        if migrate_attachments_check == 1:
+            migrate_attachments(old_issue, new_issue)
+        if migrate_statuses_check == 1:
+            migrate_status(new_issue, old_issue)
+        if create_remote_link_for_old_issue == 1:
+            remote_link_exist = 0
+            try:
+                for r_link in jira_old.remote_links(old_issue.key):
+                    if r_link.object.title == new_issue.key and r_link.relationship == 'Migrated to':
+                        remote_link_exist = 1
+            except:
+                pass
+            if remote_link_exist == 0:
+                atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
+    
+    executor = concurrent.futures.ThreadPoolExecutor(threads)
+    # executor = concurrent.futures.ProcessPoolExecutor(threads)
     
     for type in issuetypes_mappings[issuetype]['issuetypes']:
         if type in items_lst.keys():
-            n = 1
             print()
             print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
-            for key in items_lst[type]:
-                new_issue_key = project_new + '-' + key.split('-')[1]
-                try:
-                    old_issue = jira_old.issue(key)
-                except:
-                    continue
-                try:
-                    new_issue = jira_new.issue(new_issue_key)
-                except:
-                    new_issue = create_dummy_issue(jira_new, project_new, get_minfields_issuetype(issue_details_new)[0], get_minfields_issuetype(issue_details_new)[1], old_issue)
-                if migrate_metadata_check == 1:
-                    update_new_issue_type(old_issue, new_issue, issuetype)
-                if migrate_comments_check == 1:
-                    migrate_comments(old_issue, new_issue)
-                if migrate_links_check == 1:
-                    migrate_links(old_issue, new_issue)
-                if migrate_attachments_check == 1:
-                    migrate_attachments(old_issue, new_issue)
-                if migrate_statuses_check == 1:
-                    migrate_status(new_issue, old_issue)
-                if create_remote_link_for_old_issue == 1:
-                    remote_link_exist = 0
-                    try:
-                        for r_link in jira_old.remote_links(old_issue.key):
-                            if r_link.object.title == new_issue.key and r_link.relationship == 'Migrated to':
-                                remote_link_exist = 1
-                    except:
-                        pass
-                    if remote_link_exist == 0:
-                        atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
-        
-                if verbose_logging == 1 and (n % 100 == 0):
-                    print("[INFO] Processed {} issues out of {} so far.".format(n, len(items_lst[type])))
-                n += 1
-            print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
+            futures = [executor.submit(process_issue, key) for key in items_lst[type]]
         else:
             print("[INFO] No issues under '{}' issuetype has found. Skipping...".format(type))
+            continue
+        concurrent.futures.wait(futures)
+        print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
 
 
 def get_fields_list_by_project(jira, project):
@@ -1057,7 +1073,7 @@ def get_minfields_issuetype(issue_details, all=0):
 
 
 def delete_extra_issues(max_processing_key):
-    global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging
+    global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag
     
     # Calculating total Number of Issues in OLD JIRA Project
     jql_total_old = "project = '{}' AND key >= {} AND key <= {} order by key ASC".format(project_old, start_jira_key, max_processing_key)
@@ -1073,19 +1089,20 @@ def delete_extra_issues(max_processing_key):
     jql_total_new_for_deletion = "project = '{}' AND summary ~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
     total_new_for_deletion = jira_new.search_issues(jql_total_new_for_deletion, startAt=0, maxResults=0, json_result=True)['total']
     
-    if total_old == total_new:
-        if verbose_logging == 1:
-            print("[INFO] Total 'dummy' issues to be deleted in new project: '{}'.".format(total_new_for_deletion))
+    if delete_dummy_flag == 0:
+        if total_old == total_new:
+            if verbose_logging == 1:
+                print("[INFO] Total 'dummy' issues to be deleted in new project: '{}'.".format(total_new_for_deletion))
+            
+            print("[START] 'Dummy' issue deletion is started. Please wait...")
+            issues_for_delete = get_issues_by_jql(jira_new, jql_total_new_for_deletion, max_result=0)
+            for i in issues_for_delete:
+                issue = jira_new.issue(i)
+                issue.delete()
+            print("[END] 'Dummy' issues has been successfuly removed from target '{}' JIRA Project.".format(project_new), '', sep='\n')
         
-        print("[START] 'Dummy' issue deletion is started. Please wait...")
-        issues_for_delete = get_issues_by_jql(jira_new, jql_total_new_for_deletion, max_result=0)
-        for i in issues_for_delete:
-            issue = jira_new.issue(i)
-            issue.delete()
-        print("[END] 'Dummy' issues has been successfuly removed from target '{}' JIRA Project.".format(project_new), '', sep='\n')
-    
-    else:
-        print("[ERROR] Not ALL issues have been migrated. 'Dummy' issues will not be removed to avoid any mapping issues.")
+        else:
+            print("[ERROR] Not ALL issues have been migrated. 'Dummy' issues will not be removed to avoid any mapping issues.")
 
 
 
@@ -1510,7 +1527,7 @@ def main_program():
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
-    global migrate_fixversions_check, validation_error
+    global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     
     username = user.get()
     password = passwd.get()
@@ -1528,11 +1545,11 @@ def main_program():
     else:
         auth = (username, password)
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, max_retries=2)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, max_retries=2)
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
-            print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
+            print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
             exit()
     
@@ -1548,15 +1565,38 @@ def main_program():
     
     # Calculating the highest level of available Key in OLD project
     start_jira_key = project_old + '-' + str(start_jira_key)
+    max_processing_key = project_old + '-' + str(int(limit_migration_data) + int(start_jira_key.split('-')[1]))
+
+    # Check already migrated issues
+    if skip_migrated_flag == 1:
+        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' order by key desc".format(project_new)
+        last_migrated_id = get_issues_by_jql(jira_new, jql_last_migrated, max_result=1)[0]
+        old_start_jira_key = start_jira_key
+        start_jira_key = project_old + '-' + str(last_migrated_id.split('-')[1])
+        if old_start_jira_key < start_jira_key:
+            delta = int(start_jira_key.split('-')[1]) - int(old_start_jira_key.split('-')[1])
+            max_processing_key = project_old + '-' + str(int(limit_migration_data) + delta)
+        print("[INFO] The last migrated issue is '{}'.".format(start_jira_key))
+    
+    # Add last updated issues to migration / update process
+    if last_updated_date != 'YYYY-MM-DD':
+        jql_latest = "project = '{}' AND key <= '{}' AND key >= '{}' AND updated >= {}".format(project_old, max_processing_key, start_jira_key, last_updated_date)
+        updated_issues = get_issues_by_jql(jira_old, jql_latest, max_result=0)
+        for i in updated_issues:
+            issue = jira_old.issue(i.key)
+            if i.fields.issuetype.name not in items_lst.items():
+                items_lst[i.fields.issuetype.name] = set()
+            items_lst[i.fields.issuetype.name].add(issue.key)
+        updated_issues_num = len(updated_issues)
+    
     if limit_migration_data != 0:
-        max_processing_key = project_old + '-' + str(int(limit_migration_data) + int(start_jira_key.split('-')[1]))
-        jql_max = 'project = {} AND key <= {} AND key >= {} order by key desc'.format(project_old, max_processing_key, start_jira_key)
-        if verbose_logging == 1:
-            print("[INFO] The Number of issues to be migrated: {}".format(limit_migration_data))
+        jql_max = "project = '{}' AND key <= '{}' AND key >= '{}' order by key desc".format(project_old, max_processing_key, start_jira_key)
     else:
         jql_max = 'project = {} order by key desc'.format(project_old)
         max_processing_key = project_old + '-' + str(int(jira_old.search_issues(jql_max, startAt=0, maxResults=0, json_result=True)['total']))
-    
+    if verbose_logging == 1:
+        print("[INFO] The Number of issues to be migrated: {}".format(limit_migration_data + updated_issues_num))
+        
     max_id = get_issues_by_jql(jira_old, jql_max, max_result=1)[0]
     if verbose_logging == 1:
         print("[INFO] The Maximum JIRA Key for OLD '{}' project to be migrated is '{}'.".format(project_old, max_id))
@@ -1582,7 +1622,6 @@ def main_program():
             migrate_sprints(proj_old=project_old, board_id=old_board_id)
     else:
         if limit_migration_data != 0:
-            max_processing_key = project_old + '-' + str(int(limit_migration_data) + int(start_jira_key.split('-')[1]))
             jql_details = 'project = {} AND key >= {} AND key <= {} order by key ASC'.format(project_old, start_jira_key, max_processing_key)
         else:
             jql_details = 'project = {} AND key >= {} order by key ASC'.format(project_old, start_jira_key)
@@ -1593,6 +1632,7 @@ def main_program():
             print("[INFO] The Number of issues to be migrated: {}".format(total_issues))
         print()
         print('[INFO] The list of migrated issues by type:', items_lst)
+    
     for i in range(4):
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] == str(i):
@@ -1658,11 +1698,11 @@ def overwrite_popup():
 def change_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
     global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
-    global default_board_name, old_board_id, team_project_prefix
+    global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads
     
     def config_save():
         global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
-        global default_board_name, old_board_id, team_project_prefix, validation_error
+        global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
         
         validation_error = 0
         
@@ -1676,6 +1716,11 @@ def change_configs():
         default_board_name = new_board.get()
         old_board_id = old_board.get()
         team_project_prefix = new_teams.get()
+        threads = threads_num.get().strip()
+        last_updated_date = last_updated.get().strip()
+        
+        if last_updated_date == 'YYYY-MM-DD':
+            last_updated_date = ''
         
         config_popup.destroy()
         
@@ -1762,7 +1807,7 @@ def change_configs():
             old_board_id = 0
         
         try:
-            team_project_prefix = str(team_project_prefix.strip())
+            team_project_prefix = str(team_project_prefix)
         except:
             print("[ERROR] Prefix for Team names is invalid. Defailt '[{}] ' will be used.".format(project_old))
             team_project_prefix = '[' + project_old + '] '
@@ -1776,57 +1821,88 @@ def change_configs():
         config_popup.destroy()
         config_popup.quit()
     
+    def check_similar(field):
+        ''' This function required for fixing same valu duplication issue for second Tk window '''
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
+        global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
+        
+        fields = [JIRA_BASE_URL_OLD,
+                  project_old,
+                  JIRA_BASE_URL_NEW,
+                  project_new,
+                  start_jira_key,
+                  limit_migration_data,
+                  default_board_name,
+                  old_board_id,
+                  team_project_prefix,
+                  validation_error,
+                  last_updated_date,
+                  threads]
+        if field in fields:
+            return check_similar(' ' + str(field))
+        else:
+            return field
+    
     config_popup = tk.Tk()
     config_popup.title("JIRA Migration Tool - Configuration")
 
+    JIRA_BASE_URL_OLD = check_similar(JIRA_BASE_URL_OLD)
+    
     tk.Label(config_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=0, rowspan=1)
     source_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_OLD)
     source_jira.insert(END, JIRA_BASE_URL_OLD)
     source_jira.grid(row=0, column=1, columnspan=2, padx=8)
-    
-    if JIRA_BASE_URL_OLD == JIRA_BASE_URL_NEW:
-        JIRA_BASE_URL_NEW += ' '
+
+    project_old = check_similar(project_old)
     
     tk.Label(config_popup, text="Source Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=3, rowspan=1)
-    source_project = tk.Entry(config_popup, width=10, textvariable=project_old)
+    source_project = tk.Entry(config_popup, width=16, textvariable=project_old)
     source_project.insert(END, project_old)
-    source_project.grid(row=0, column=4, columnspan=1, padx=8)
-    
+    source_project.grid(row=0, column=3, columnspan=2, padx=7, stick=E)
+
+    JIRA_BASE_URL_NEW = check_similar(JIRA_BASE_URL_NEW)
+
     tk.Label(config_popup, text="Target JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=1, column=0, rowspan=1)
     target_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_NEW)
     target_jira.insert(END, JIRA_BASE_URL_NEW)
     target_jira.grid(row=1, column=1, columnspan=2, padx=8)
-    
-    if project_new == project_old:
-        project_new += ' '
+
+    project_new = check_similar(project_new)
     
     tk.Label(config_popup, text="Target Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=3, rowspan=1)
-    target_project = tk.Entry(config_popup, width=10, textvariable=project_new)
+    target_project = tk.Entry(config_popup, width=16, textvariable=project_new)
     target_project.insert(END, project_new)
-    target_project.grid(row=1, column=4, columnspan=1, padx=8)
+    target_project.grid(row=1, column=3, columnspan=2, padx=7, stick=E)
     
     tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=2, columnspan=5)
     
     tk.Label(config_popup, text="Detailed Configuration for migration. Defaults are '0' or empty for ALL Sprints / Issues:", foreground="black", font=("Helvetica", 11, "italic"), padx=10, wraplength=500).grid(row=3, column=0, columnspan=5)
+
+    start_jira_key = check_similar(start_jira_key)
     
     tk.Label(config_popup, text="Start migration from (Issue Key or Number):", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=300).grid(row=4, column=0, columnspan=2)
     first_issue = tk.Entry(config_popup, width=20, textvariable=start_jira_key)
     first_issue.insert(END, start_jira_key)
     first_issue.grid(row=4, column=2, columnspan=1, padx=8)
+
+    limit_migration_data = check_similar(limit_migration_data)
     
     tk.Label(config_popup, text="Number for migration:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=4, column=3)
     migrated_number = tk.Entry(config_popup, width=10, textvariable=limit_migration_data)
     migrated_number.delete(0, END)
     migrated_number.insert(0, limit_migration_data)
     migrated_number.grid(row=4, column=4, columnspan=1, padx=8)
+
+    default_board_name = check_similar(default_board_name)
     
     tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=5, column=0, columnspan=2)
     new_board = tk.Entry(config_popup, width=20, textvariable=default_board_name)
     new_board.insert(END, default_board_name)
     new_board.grid(row=5, column=2, columnspan=1, padx=8)
-    
-    if old_board_id == limit_migration_data:
-        old_board_id = str(old_board_id) + ' '
+
+    if old_board_id == 0:
+        old_board_id = ''
+    old_board_id = check_similar(old_board_id)
     
     tk.Label(config_popup, text="Sprints from Board ID only:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=5, column=3)
     old_board = tk.Entry(config_popup, width=10, textvariable=old_board_id)
@@ -1834,15 +1910,28 @@ def change_configs():
     old_board.insert(0, old_board_id)
     old_board.grid(row=5, column=4, columnspan=1, padx=8)
     
-    if default_board_name == team_project_prefix:
-        team_project_prefix += ' '
-    
     tk.Label(config_popup, text="Prefix for Team names, if migrated:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=6, column=0, columnspan=2)
     new_teams = tk.Entry(config_popup, width=20, textvariable=team_project_prefix)
     new_teams.insert(END, team_project_prefix)
     new_teams.grid(row=6, column=2, columnspan=1, padx=8)
+
+    tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
+    threads_num = tk.Entry(config_popup, width=10, textvariable=threads)
+    threads_num.delete(0, END)
+    threads_num.insert(0, threads)
+    threads_num.grid(row=6, column=4, columnspan=1, padx=8)
     
-    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=7, columnspan=5)
+    if last_updated_date == '':
+        last_updated_date = 'YYYY-MM-DD'
+
+    last_updated_date = check_similar(last_updated_date)
+    
+    tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=7, column=0, columnspan=4)
+    last_updated = tk.Entry(config_popup, width=15, textvariable=last_updated_date)
+    last_updated.insert(END, last_updated_date)
+    last_updated.grid(row=7, column=3, columnspan=2, padx=70, stick=W)
+    
+    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=8, columnspan=5)
     
     tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=9, column=0, pady=8, padx=20, sticky=W, columnspan=3)
     tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=9, column=2, pady=8, padx=20, sticky=E, columnspan=3)
@@ -1956,6 +2045,15 @@ def change_linking(*args):
     create_remote_link_for_old_issue = process_old_linkage.get()
 
 
+def change_dummy(*args):
+    global delete_dummy_flag
+    delete_dummy_flag = process_dummy_del.get()
+
+
+def change_migrated(*args):
+    global skip_migrated_flag
+    skip_migrated_flag = process_non_migrated.get()
+
 
 # ------------------ MAIN PROGRAM -----------------------------------
 print("[INFO] Program has started. Please DO NOT CLOSE that window.")
@@ -1972,8 +2070,8 @@ tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=2, columnspan=4)
 
 tk.Label(main, text="For migration process please enter your Username / Password for JIRA access", foreground="black", font=("Helvetica", 10), padx=10, wraplength=260).grid(row=3, column=0, rowspan=2, columnspan=3, sticky=W, padx=10)
-tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=3, column=1, pady=5, columnspan=2, sticky=W, padx=120)
-tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=4, column=1, pady=5, columnspan=2, sticky=W, padx=120)
+tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=3, column=1, pady=5, columnspan=2, sticky=W, padx=110)
+tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=4, column=1, pady=5, columnspan=2, sticky=W, padx=110)
 user = tk.Entry(main)
 user.grid(row=3, column=2, pady=5, sticky=W, columnspan=2, padx=30)
 passwd = tk.Entry(main, width=20, show="*")
@@ -1984,9 +2082,9 @@ tk.Button(main, text='Start JIRA Migration', font=("Helvetica", 9, "bold"), stat
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=5, columnspan=4)
 
 tk.Label(main, text="Upload Mapping Template:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=0, rowspan=1, padx=20, sticky=W)
-file = tk.Entry(main, width=50, textvariable=mapping_file)
+file = tk.Entry(main, width=54, textvariable=mapping_file)
 file.insert(END, mapping_file)
-file.grid(row=6, column=1, columnspan=2, padx=8)
+file.grid(row=6, column=1, columnspan=2, padx=0)
 tk.Button(main, text='Browse', command=load_file, width=15).grid(row=6, column=3, pady=3, padx=8)
 
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=7, columnspan=4)
@@ -2010,7 +2108,7 @@ Checkbutton(main, text="Migrate Teams from Source JIRA (Portfolio Add-on).", fon
 process_teams.trace('w', change_migrate_teams)
 
 process_metadata = IntVar(value=migrate_metadata_check)
-Checkbutton(main, text="Migrate Teams from Source JIRA (Portfolio Add-on).", font=("Helvetica", 9, "italic"), variable=process_metadata).grid(row=13, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate Metadata (field values) for Issues.", font=("Helvetica", 9, "italic"), variable=process_metadata).grid(row=13, sticky=W, padx=20, columnspan=4, pady=0)
 process_metadata.trace('w', change_migrate_metadata)
 
 process_attachments = IntVar(value=migrate_attachments_check)
@@ -2035,13 +2133,21 @@ process_logging = IntVar(value=verbose_logging)
 Checkbutton(main, text="Switch Verbose Logging ON for migration process.", font=("Helvetica", 9, "italic"), variable=process_logging).grid(row=19, sticky=W, padx=20, columnspan=3, pady=0)
 process_logging.trace('w', change_logging)
 
+process_dummy_del = IntVar(value=delete_dummy_flag)
+Checkbutton(main, text="Skip deletion of dummy issues (for testing purposes).", font=("Helvetica", 9, "italic"), variable=process_dummy_del).grid(row=20, sticky=W, padx=20, columnspan=3, pady=0)
+process_dummy_del.trace('w', change_dummy)
+
 process_old_linkage = IntVar(value=create_remote_link_for_old_issue)
 Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 9, "italic"), variable=process_old_linkage).grid(row=19, column=2, sticky=E, padx=40, columnspan=2, pady=0)
 process_old_linkage.trace('w', change_linking)
 
-tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=11, column=3, pady=4, rowspan=3, sticky=W)
-tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=20, column=0, pady=8, columnspan=4, rowspan=2)
+process_non_migrated = IntVar(value=skip_migrated_flag)
+Checkbutton(main, text="Skip already migrated issues.", font=("Helvetica", 9, "italic"), variable=process_non_migrated).grid(row=20, column=2, sticky=E, padx=77, columnspan=2, pady=0)
+process_non_migrated.trace('w', change_migrated)
 
-tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=21, column=3, sticky=E, padx=10)
+tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=11, column=3, pady=4, rowspan=3, sticky=W)
+tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=21, column=0, pady=8, columnspan=4, rowspan=2)
+
+tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=22, column=3, sticky=E, padx=10)
 
 tk.mainloop()
