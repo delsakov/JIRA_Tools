@@ -1127,23 +1127,50 @@ def delete_extra_issues(max_processing_key):
             print("[ERROR] Not ALL issues have been migrated. 'Dummy' issues will not be removed to avoid any mapping issues.")
 
 
-
 def create_dummy_issue(jira, project, issuetype, fields, old_issue):
-    summary = '"summary": "Dummy issue - for migration",'
-    issue_type = '"issuetype": {"name": "' + issuetype + '"},'
-    project_issue = '"project": "' + project + '"'
-    new_data = eval('{' + summary
-                    + issue_type
-                    + project_issue + '}')
-    issue = jira.create_issue(fields=new_data)
-    if old_issue.key.split('-')[1] == issue.key.split('-')[1]:
+    global issue_details_new
+
+    new_data = {}
+    new_data['project'] = project
+    new_data['issuetype'] = eval('{"name": "' + issuetype + '"}')
+    new_data['summary'] = "Dummy issue - for migration"
+
+    for field in fields:
+        for f in issue_details_old[issuetype]:
+            if issue_details_old[issuetype][f]['id'] == field:
+                default_value = issue_details_old[issuetype][f]['default value']
+                allowed = issue_details_old[issuetype][f]['allowed values']
+                type = issue_details_old[issuetype][f]['type']
+                custom_type = issue_details_old[issuetype][f]['custom type']
+                if type == 'option':
+                    value = allowed[0] if default_value is None else default_value
+                    new_data[field] = eval('{"value": "' + value + '"}')
+                elif field in ['components', 'versions', 'fixVersions'] or custom_type == 'multiversion':
+                    value = allowed[0] if default_value is None else default_value
+                    new_data[field] = eval('[{"name": "' + value + '"}]')
+                elif type == 'option-with-child':
+                    new_data[field] = eval('{"value": "' + allowed[0][0] + '", "child": {"value": "' + allowed[0][1] + '"}}')
+                elif type == 'string':
+                    new_data[field] = 'Dummy' if default_value is None else default_value
+                elif type == 'number':
+                    new_data[field] = 0 if default_value is None else default_value
+                elif type == 'array':
+                    new_data[field] = ['Dummy'] if default_value is None else [default_value]
+                else:
+                    new_data[field] = default_value
+    try:
+        issue = jira.create_issue(fields=new_data)
+    except Exception as e:
+        print("[ERROR] Dummy issue cannot be created due to '{}'".format(e))
+        return
+    if int(old_issue.key.split('-')[1]) <= int(issue.key.split('-')[1]):
         return issue
     else:
         create_dummy_issue(jira, project, issuetype, fields, old_issue)
 
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
-    ''' This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. '''
+    """ This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. """
     global auth
     
     session = requests.Session()
@@ -1157,7 +1184,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         print("[ERROR] Issue can't be converted to Sub-Task")
         return
     
-    url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'   
+    url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
     payload_11 = {
         "parentIssueKey": parent,
         "issuetype": sub_task_id,
@@ -1873,7 +1900,7 @@ def change_configs():
         config_popup.quit()
     
     def check_similar(field, value):
-        ''' This function required for fixing same valu duplication issue for second Tk window '''
+        """ This function required for fixing same valu duplication issue for second Tk window """
         global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
         
