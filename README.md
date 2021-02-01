@@ -19,7 +19,11 @@ Note: All IDs are copyed as is (OLD_PROJECT-12345 will be NEW_PROJECT-12345), in
 For any questions, bugs - please contact me (Dmitry Elsakov).
 
 # JIRA Fields Configuration Details Tool
-This Tool with UI for retrieving list of fields for specific Project _(or ALL available)_ per JIRA instance, including relation to IssueType, field type and allowed values in case of valided field, like pre-defined drop-down.
+This Tool with UI for retrieving list of fields for specific Project _(or ALL available)_ per JIRA instance, including relation to IssueType, field type and allowed values in case of validated field, like pre-defined drop-down.
+
+Steps:
+1. Run Tool, specify JIRA instance URL and Project Key (if data for only one project is required) and Output Excel
+2. Execute, wait -> All field configuration would be available in created Excel
 
 # JIRA Export Tool
 Tool for exporting JIRA data to the Excel file. No limitation of number of issues. Including simple UI.
