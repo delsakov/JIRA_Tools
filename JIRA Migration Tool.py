@@ -247,7 +247,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 
 def get_transitions(project, jira_url, new=False):
-    global old_transitions, new_transitions, auth
+    global old_transitions, new_transitions, auth, migrate_statuses_check
     print("[START] Retrieving Transitions and Statuses for '{}' project from JIRA.".format(project))
     headers = {"Content-type": "application/json", "Accept": "application/json"}
     
@@ -291,6 +291,8 @@ def get_transitions(project, jira_url, new=False):
             new_transitions = transitions
         print("[END] Transitions and Statuses for '{}' project has been successfully retrieved.".format(project))
     except Exception as e:
+        migrate_statuses_check = 0
+        print("[WARNING] No PROJECT ADMIN right for the '{}' project. Statuses WILL NOT be updated / migrated.".format(project))
         print("[ERROR] Transitions and Statuses can't be retrieved due to '{}'".format(e))
 
 
@@ -310,8 +312,11 @@ def get_hierarchy_config():
 
 def prepare_template_data():
     global old_transitions, new_transitions, issue_details_old, default_validation, jira_system_fields
-    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, migrate_statuses_check
+    
     template_excel = {}
+    old_statuses, new_statuses, old_issuetypes, new_issuetypes = ([], [], [], [])
+    
     def calculate_statuses(transitions):
         issuetypes_lst = []
         issuetype_statuses = {}
@@ -333,12 +338,20 @@ def prepare_template_data():
     project_details.append([JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, 'Source -> Target'])
     
     # IssueTypes
-    old_statuses, old_issuetypes = calculate_statuses(old_transitions)
-    new_statuses, new_issuetypes = calculate_statuses(new_transitions)
+    if migrate_statuses_check == 1:
+        old_statuses, old_issuetypes = calculate_statuses(old_transitions)
+        new_statuses, new_issuetypes = calculate_statuses(new_transitions)
+    else:
+        for issuetype in issue_details_old.keys():
+            old_issuetypes.append(issuetype)
+        old_issuetypes = list(set(old_issuetypes))
+        for issuetype in issue_details_new.keys():
+            new_issuetypes.append(issuetype)
+        new_issuetypes = list(set(new_issuetypes))
     issue_types_map_lst = [['Source Issue type', 'Target Issue Type']]
     for o_it in old_issuetypes:
         issue_types_map_lst.append([o_it, ''])
-    
+        
     # Fields
     fields_map_lst = [['Source Issue Type', ' Source Field Name', 'Target Field Name']]
     for issuetype, fields in issue_details_old.items():
@@ -353,8 +366,9 @@ def prepare_template_data():
                 new_fields_val.append(field.title())
     
     # Statuses
-    statuses_map_lst = [['Source Issue Type', 'Source Status', 'Target Status']]
-    statuses_map_lst.extend(old_statuses)
+    if migrate_statuses_check == 1:
+        statuses_map_lst = [['Source Issue Type', 'Source Status', 'Target Status']]
+        statuses_map_lst.extend(old_statuses)
     
     # Priority
     priority_map_lst = [['Source Priority', 'Target Priority']]
@@ -376,7 +390,8 @@ def prepare_template_data():
     template_excel['Project'] = project_details
     template_excel['Issuetypes'] = issue_types_map_lst
     template_excel['Fields'] = fields_map_lst
-    template_excel['Statuses'] = statuses_map_lst
+    if migrate_statuses_check == 1:
+        template_excel['Statuses'] = statuses_map_lst
     template_excel['Priority'] = priority_map_lst
     
     # Other fields
@@ -397,14 +412,18 @@ def prepare_template_data():
                     template_excel[field_name] = new_field_map_lst
     
     # Calculate and update validation
-    new_statuses_val = []
-    for i in new_statuses:
-        new_statuses_val.append(i[1].title())
-    default_validation['Statuses'] = '"' + get_str_from_lst(list(set(new_statuses_val)), spacing='') + '"'
+    if migrate_statuses_check == 1:
+        new_statuses_val = []
+        for i in new_statuses:
+            new_statuses_val.append(i[1].title())
+        default_validation['Statuses'] = '"' + get_str_from_lst(list(set(new_statuses_val)), spacing='') + '"'
     default_validation['Fields'] = '"' + get_str_from_lst(list(set(new_fields_val)), spacing='') + '"'
     new_issuetypes_val = []
     for i in new_issuetypes:
-        new_issuetypes_val.append(i.title())
+        try:
+            new_issuetypes_val.append(i.title())
+        except:
+            new_issuetypes_val.append(i)
     default_validation['Issuetypes'] = '"' + get_str_from_lst(list(set(new_issuetypes_val)), spacing='') + '"'
     default_validation['Priority'] = '"' + get_str_from_lst(list(set(priority_new_lst)), spacing='') + '"'
     
@@ -414,6 +433,7 @@ def prepare_template_data():
 def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_result=limit_migration_data, issue_details=None):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
     global old_sprints, items_lst, limit_migration_data, total_issues
+    
     print("[START] The list of all Issues are retrieving from JIRA.")
     auth_jira = jira
     issues, items = ([],[])
@@ -920,7 +940,8 @@ def load_file():
 
 
 def create_excel_sheet(sheet_data, title):
-    global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old, jira_system_fields
+    global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
+    global jira_system_fields
     wb.create_sheet(title)
     ws = wb.get_sheet_by_name(title)
     
@@ -1486,7 +1507,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
 
 def generate_template():
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
-    global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new
+    global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads
     
     username = user.get()
     password = passwd.get()
@@ -1504,14 +1525,16 @@ def generate_template():
         jira_authorization_popup()
     else:
         auth = (username, password)
+        if verbose_logging == 1:
+            print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
             exit()
-    if project_old == ' ' or project_new == ' ' or JIRA_BASE_URL_NEW == ' ' or JIRA_BASE_URL_OLD == ' ':
+    if project_old == '' or project_new == '' or JIRA_BASE_URL_NEW == '' or JIRA_BASE_URL_OLD == '':
         print("[ERROR] Configuration parameters are not set. Exiting...")
         os.system("pause")
         exit()
@@ -1521,9 +1544,10 @@ def generate_template():
     issue_details_old = get_fields_list_by_project(jira_old, project_old)
     issue_details_new = get_fields_list_by_project(jira_new, project_new)
     print("[END] Fields configuration successfully processed.", '', sep='\n')
-    get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
+    if migrate_statuses_check == 1:
+        get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
+        get_transitions(project_old, JIRA_BASE_URL_OLD)
     get_hierarchy_config()
-    get_transitions(project_old, JIRA_BASE_URL_OLD)
     
     for k, v in prepare_template_data().items():
         create_excel_sheet(v, k)
@@ -1535,26 +1559,30 @@ def main_program():
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
-    global create_remote_link_for_old_issue
+    global create_remote_link_for_old_issue, threads
     
     username = user.get()
     password = passwd.get()
     mapping_file = file.get().split('.xls')[0] + '.xlsx'
     
+    # Checking the all mandatory fields are populated on Config page
     if validation_error == 1:
         change_configs()
     
+    # Checking the Mapping File available
     if os.path.exists(mapping_file) is False:
         load_file()
     main.destroy()
+    
+    # Checking the JIRA credentials
     if len(username) < 6 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
         jira_authorization_popup()
     else:
         auth = (username, password)
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, max_retries=2)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, max_retries=2)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
             if create_remote_link_for_old_issue == 1:
                 atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
@@ -1562,6 +1590,7 @@ def main_program():
             os.system("pause")
             exit()
     
+    # Starting Program
     print('[START] Migration process has been started. Please wait...')
     print()
     read_excel(file_path=mapping_file)
@@ -1569,7 +1598,10 @@ def main_program():
     issue_details_old = get_fields_list_by_project(jira_old, project_old)
     issue_details_new = get_fields_list_by_project(jira_new, project_new)
     print("[END] Fields configuration successfully processed.", '', sep='\n')
-    get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
+    
+    if migrate_statuses_check == 1:
+        get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
+    
     get_hierarchy_config()
     
     # Calculating the highest level of available Key in OLD project
@@ -1859,7 +1891,8 @@ def change_configs():
                   "team_project_prefix": team_project_prefix,
                   "validation_error": validation_error,
                   "last_updated_date": last_updated_date,
-                  "threads": threads}
+                  "threads": threads,
+                  }
         for f, v in fields.items():
             if str(value) == str(v) and field != f:
                 return check_similar(field, ' ' + str(value))
@@ -1972,6 +2005,7 @@ def jira_authorization_popup():
     
     def jira_save():
         global auth, username, password, jira_old, jira_new, atlassian_jira_old, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW
+        global threads
         
         username = user.get()
         password = passwd.get()
@@ -1982,12 +2016,14 @@ def jira_authorization_popup():
         auth = (username, password)
         jira_popup.destroy()
         
+        if verbose_logging == 1:
+            print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
-            print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
+            print("[ERROR] Login to JIRA failed. JIRA could be unavailable or User credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
             exit()
         jira_popup.quit()
@@ -1995,7 +2031,7 @@ def jira_authorization_popup():
     def jira_cancel():
         jira_popup.destroy()
         jira_popup.quit()
-        print("[ERROR] Invalid JIRA credentials were entered!")
+        print("[ERROR] Invalid JIRA credentials were entered! Program exits...")
         os.system("pause")
         exit()
     
@@ -2151,7 +2187,7 @@ Checkbutton(main, text="Migrate all Links from Source JIRA issues.", font=("Helv
 process_links.trace('w', change_migrate_links)
 
 process_statuses = IntVar(value=migrate_statuses_check)
-Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=17, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issues (Project Admin access required).", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=17, sticky=W, padx=20, columnspan=4, pady=0)
 process_statuses.trace('w', change_migrate_statuses)
 
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=18, columnspan=4)
