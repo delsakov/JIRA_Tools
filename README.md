@@ -6,7 +6,7 @@ This repository would contain some code for integration with JIRA.
 
 # JIRA Migration Tool
 This is Tool with UI for migrating one JIRA project on one instance to different JIRA instanse and different Instance.
-Project admin rights are required.
+Project admin rights are required for Statuses migration.
 
 Steps:
 1. Create Mapping File (dynamicaly creating Excel sheets)
@@ -17,6 +17,9 @@ Steps:
 Note: All IDs are copyed as is (OLD_PROJECT-12345 will be NEW_PROJECT-12345), including Sprints, Issues, FixVersions, Components, Comments, Attachments and Links.
 
 For any questions, bugs - please contact me (Dmitry Elsakov).
+
+# JIRA Fields Configuration Details Tool
+This Tool with UI for retrieving list of fields for specific Project _(or ALL available)_ per JIRA instance, including relation to IssueType, field type and allowed values in case of valided field, like pre-defined drop-down.
 
 # JIRA Export Tool
 Tool for exporting JIRA data to the Excel file. No limitation of number of issues. Including simple UI.
