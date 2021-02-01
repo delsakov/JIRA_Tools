@@ -1143,6 +1143,7 @@ def create_dummy_issue(jira, project, issuetype, fields, old_issue):
 
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
+    ''' This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. '''
     global auth
     
     session = requests.Session()
@@ -1156,10 +1157,8 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         print("[ERROR] Issue can't be converted to Sub-Task")
         return
     
-    # Step 1: Select Parent and Sub-task Type
-    url_s1 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
-    
-    payload_s1 = {
+    url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'   
+    payload_11 = {
         "parentIssueKey": parent,
         "issuetype": sub_task_id,
         "id": new_issue.id,
@@ -1168,31 +1167,29 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_s1, data=payload_s1, headers={"Referer": url0})
+    r = session.post(url=url_11, data=payload_11, headers={"Referer": url0})
     r.raise_for_status()
     
-    # Step 2: Update Fields
-    url_s2 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueUpdateFields.jspa'
-    payload_s2 = {
+    url_12 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueUpdateFields.jspa'
+    payload_12 = {
         "id": new_issue.id,
         "guid": guid,
         "Next >>": "Next >>",
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_s2, data=payload_s2)
+    r = session.post(url=url_12, data=payload_12)
     r.raise_for_status()
     
-    # Step 3: Confirm the conversion with all of the details you have just configured
-    url_s3 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueConvert.jspa'
-    payload_s3 = {
+    url_13 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueConvert.jspa'
+    payload_13 = {
         "id": new_issue.id,
         "guid": guid,
         "Finish": "Finish",
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_s3, data=payload_s3)
+    r = session.post(url=url_13, data=payload_13)
     r.raise_for_status()
 
 
