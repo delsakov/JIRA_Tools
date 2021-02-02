@@ -584,7 +584,9 @@ def get_team_id(team_name):
 
 
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
-    global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, start_jira_key, limit_migration_data, auth
+    global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth
+    global max_processing_key, start_jira_key
+    
     print()
     new_board, n = (0, 0)
     for board in jira_new.boards():
@@ -611,7 +613,6 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
         else:
             print("[INFO] All Sprints to be migrated from old '{}' project and will be added into new '{}' project, '{}' board.".format(proj_old, project, name))
             if limit_migration_data != 0:
-                max_processing_key = project_old + '-' + str(int(limit_migration_data) + int(start_jira_key.split('-')[1]))
                 jql_sprints = 'project = {} AND key >= {} AND key <= {} order by key ASC'.format(project_old, start_jira_key, max_processing_key)
             else:
                 jql_sprints = 'project = {} AND key >= {} order by key ASC'.format(proj_old, start_jira_key)
@@ -1347,9 +1348,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             cont_value = []
             for v in value:
                 if hasattr(v, 'name'):
-                    if issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(v) != []:
-                        cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
-                    elif issue_details_old[old_issuetype][new_field]['type'] == 'array':
+                    if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(v) != [])
+                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     cont_value.append({"value": get_new_value_from_mapping(v.value, new_field)})
@@ -1594,7 +1594,7 @@ def main_program():
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
-    global create_remote_link_for_old_issue, threads, default_board_name
+    global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key
     
     username = user.get()
     password = passwd.get()
@@ -1650,23 +1650,26 @@ def main_program():
         last_migrated_id = issues[0] if issues is not None else None
         if last_migrated_id is None:
             last_migrated_id = project_new + '-1'
-        old_start_jira_key = start_jira_key
-        start_jira_key = project_old + '-' + str(last_migrated_id.split('-')[1])
-        if old_start_jira_key < start_jira_key:
-            delta = int(start_jira_key.split('-')[1]) - int(old_start_jira_key.split('-')[1])
-            max_processing_key = project_old + '-' + str(int(limit_migration_data) + delta)
-        print("[INFO] The last migrated issue is '{}'.".format(start_jira_key))
+        new_start_jira_key = project_old + '-' + str(last_migrated_id.split('-')[1])
+        if start_jira_key < new_start_jira_key:
+            start_jira_key = new_start_jira_key
+        if start_jira_key > max_processing_key:
+            start_jira_key = max_processing_key
+        print("[INFO] The first processing issue would be '{}'.".format(start_jira_key))
     
     # Add last updated issues to migration / update process
     if last_updated_date not in ['YYYY-MM-DD', '']:
-        jql_latest = "project = '{}' AND key <= '{}' AND key >= '{}' AND updated >= {}".format(project_old, max_processing_key, start_jira_key, last_updated_date)
-        updated_issues = get_issues_by_jql(jira_old, jql_latest, max_result=0)
-        for i in updated_issues:
-            issue = jira_old.issue(i.key)
-            if i.fields.issuetype.name not in items_lst.items():
-                items_lst[i.fields.issuetype.name] = set()
-            items_lst[i.fields.issuetype.name].add(issue.key)
-        updated_issues_num = len(updated_issues)
+        try:
+            jql_latest = "project = '{}' AND key <= '{}' AND updated >= {}".format(project_old, max_processing_key, last_updated_date)
+            updated_issues = get_issues_by_jql(jira_old, jql_latest, max_result=0)
+            if updated_issues is not None:
+                for i in updated_issues:
+                    issue = jira_old.issue(i)
+                    if issue.fields.issuetype.name not in items_lst.items():
+                        items_lst[issue.fields.issuetype.name] = set()
+                    items_lst[issue.fields.issuetype.name].add(issue.key)
+        except:
+            print("[ERROR] The value for Last Updated '{}' not in correct 'YYYY-MM-DD' format.".format(last_updated_date))
     
     if limit_migration_data != 0:
         jql_max = "project = '{}' AND key <= '{}' AND key >= '{}' order by key desc".format(project_old, max_processing_key, start_jira_key)
@@ -1674,7 +1677,10 @@ def main_program():
         jql_max = 'project = {} order by key desc'.format(project_old)
         max_processing_key = project_old + '-' + str(int(jira_old.search_issues(jql_max, startAt=0, maxResults=0, json_result=True)['total']))
     if verbose_logging == 1:
-        print("[INFO] The Number of issues to be migrated: {}".format(limit_migration_data + updated_issues_num))
+        number_of_migrated = 0
+        for v in items_lst.values():
+            number_of_migrated += len(v)
+        print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
     
     try:
         max_id = get_issues_by_jql(jira_old, jql_max, max_result=1)[0]
