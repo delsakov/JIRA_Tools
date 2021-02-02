@@ -194,7 +194,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                     status_mappings[d[0].strip()][d[2].strip()] = [d[1].strip()]
                             else:
                                 status_mappings[d[0].strip()] = {d[2].strip(): [d[1].strip()]}
-                            if d[2] == '':
+                            if d[2] == '' and verbose_logging == 1:
                                 print("[WARNING] The mapping of '{}' status for '{}' Issuetype not found. Default status would be used.".format(d[1], d[0]))
                     elif excel_sheet_name == 'Fields':
                         if mapping_type == 0:
@@ -211,7 +211,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                     fields_mappings[d[0].strip()][d[2].strip()] = [d[1].strip()]
                             else:
                                 fields_mappings[d[0].strip()] = {d[2].strip(): [d[1].strip()]}
-                            if d[2] == '':
+                            if d[2] == '' and verbose_logging == 1:
                                 print("[WARNING] The mapping of '{}' field for '{}' Issuetype not found. Field values will be dropped.".format(d[1], d[0]))
                     else:
                         if len(d) <= 2:
@@ -888,7 +888,7 @@ def migrate_issues(issuetype):
             with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
                 futures = [executor.submit(process_issue, key) for key in items_lst[type]]
         else:
-            print("[INFO] No issues under '{}' issuetype has found. Skipping...".format(type))
+            print("[INFO] No issues under '{}' issuetype were found. Skipping...".format(type))
             continue
         print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
 
@@ -1100,15 +1100,14 @@ def delete_extra_issues(max_processing_key):
     global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag
     
     # Calculating total Number of Issues in OLD JIRA Project
-    jql_total_old = "project = '{}' AND key >= {} AND key <= {} order by key ASC".format(project_old, start_jira_key, max_processing_key)
+    jql_total_old = "project = '{}' AND key >= {} AND key <= {}".format(project_old, start_jira_key, max_processing_key)
     total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=0, json_result=True)['total']
     
     # Calculating total Number of Migrated Issues to NEW JIRA Project
     jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
     total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=0, json_result=True)['total']
     
-    if verbose_logging == 1:
-        print("[INFO] Total issues in Source Project: '{}' and total migrated issues: '{}'.".format(total_old, total_new))
+    print("[INFO] Total issues in Source Project: '{}' and total migrated issues: '{}'.".format(total_old, total_new))
     
     jql_total_new_for_deletion = "project = '{}' AND summary ~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
     total_new_for_deletion = jira_new.search_issues(jql_total_new_for_deletion, startAt=0, maxResults=0, json_result=True)['total']
@@ -1127,6 +1126,8 @@ def delete_extra_issues(max_processing_key):
         
         else:
             print("[ERROR] Not ALL issues have been migrated. 'Dummy' issues will not be removed to avoid any mapping issues.")
+    else:
+        print("[INFO] 'Dummy' issues will not be deleted due to 'Skip dummy deletion' flag was set.")
 
 
 def create_dummy_issue(jira, project, issuetype, fields, old_issue):
@@ -1742,6 +1743,7 @@ def main_program():
             migrate_sprints(proj_old=project_old, param='CLOSED')
         else:
             print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, int(total_old) - int(total_new)))
+            print()
         
     # Delete issues with Summary = 'Dummy Issue'
     delete_extra_issues(max_processing_key)
