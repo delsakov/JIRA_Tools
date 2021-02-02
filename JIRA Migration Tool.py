@@ -1349,6 +1349,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if hasattr(v, 'name'):
                     if issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(v) != []:
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
+                    elif issue_details_old[old_issuetype][new_field]['type'] == 'array':
+                        cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     cont_value.append({"value": get_new_value_from_mapping(v.value, new_field)})
                 else:
