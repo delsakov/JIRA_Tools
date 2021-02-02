@@ -99,7 +99,6 @@ updated_issues_num = 0
 threads = 1
 migrated_text = 'Migrated to'
 verbose_logging = 0
-detailed_logging = False
 migrate_fixversions_check = 1
 migrate_components_check = 1
 migrate_sprints_check = 1
@@ -300,14 +299,17 @@ def get_hierarchy_config():
     global sub_tasks, issuetypes_mappings, issue_details_new
     
     for issuetype, details in issuetypes_mappings.items():
-        if issuetype in sub_tasks.keys():
-            issuetypes_mappings[issuetype]['hierarchy'] = '3'
-        elif 'Epic Link' in issue_details_new[issuetype].keys():
-            issuetypes_mappings[issuetype]['hierarchy'] = '2'
-        elif 'Epic Name' in issue_details_new[issuetype].keys():
-            issuetypes_mappings[issuetype]['hierarchy'] = '1'
-        else:
-            issuetypes_mappings[issuetype]['hierarchy'] = '0'
+        try:
+            if issuetype in sub_tasks.keys():
+                issuetypes_mappings[issuetype]['hierarchy'] = '3'
+            elif 'Epic Link' in issue_details_new[issuetype].keys():
+                issuetypes_mappings[issuetype]['hierarchy'] = '2'
+            elif 'Epic Name' in issue_details_new[issuetype].keys():
+                issuetypes_mappings[issuetype]['hierarchy'] = '1'
+            else:
+                issuetypes_mappings[issuetype]['hierarchy'] = '0'
+        except:
+            print("[ERROR] '{}' Issue Type not available in mapping file.".format(issuetype))
 
 
 def prepare_template_data():
@@ -436,7 +438,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
     
     print("[START] The list of all Issues are retrieving from JIRA.")
     auth_jira = jira
-    issues, items = ([],[])
+    issues, items = ([], [])
     start_idx, block_num, block_size = (0, 0, 100)
     if sprint is not None and issue_details is not None:
         sprint_field_id = issue_details['Story']['Sprint']['id']
@@ -498,7 +500,10 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
                         if name not in old_sprints.keys():
                             old_sprints[name] = {"id": sprint_id, "startDate": startDate, "endDate": endDate, "state": state.upper()}
     else:
-        return list(set([i.key for i in issues]))
+        if len(issues) > 0:
+            return list(set([i.key for i in issues]))
+        else:
+            return None
 
 
 def get_str_from_lst(lst, sep=',', spacing=' '):
@@ -586,7 +591,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
         if board.name == name:
             new_board = board.id
     if new_board == 0:
-        new_board = jira_new.create_board(name, project)
+        new_board = jira_new.create_board(name, project, location_type='project')
     
     for n_sprint in jira_new.sprints(board_id=new_board):
         new_sprints[n_sprint.name] = {"id": n_sprint.id, "state": n_sprint.state}
@@ -875,19 +880,16 @@ def migrate_issues(issuetype):
                 pass
             if remote_link_exist == 0:
                 atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
-    
-    executor = concurrent.futures.ThreadPoolExecutor(threads)
-    # executor = concurrent.futures.ProcessPoolExecutor(threads)
-    
+
     for type in issuetypes_mappings[issuetype]['issuetypes']:
         if type in items_lst.keys():
             print()
             print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
-            futures = [executor.submit(process_issue, key) for key in items_lst[type]]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+                futures = [executor.submit(process_issue, key) for key in items_lst[type]]
         else:
             print("[INFO] No issues under '{}' issuetype has found. Skipping...".format(type))
             continue
-        concurrent.futures.wait(futures)
         print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
 
 
@@ -1221,8 +1223,9 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
 
 
 def load_config(message=True):
-    global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date
+    global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date, start_jira_key
     global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads
+    
     if os.path.exists(config_file) is True:
         try:
             with open(config_file) as json_data_file:
@@ -1248,6 +1251,8 @@ def load_config(message=True):
                     temp_dir_name = v
                 elif k == 'limit_migration_data':
                     limit_migration_data = v
+                elif k == 'start_jira_key':
+                    start_jira_key = v
                 elif k == 'last_updated_date':
                     last_updated_date = v
                 elif k == 'threads':
@@ -1278,6 +1283,7 @@ def save_config(message=True):
             'new_transitions': new_transitions,
             'temp_dir_name': temp_dir_name,
             'limit_migration_data': limit_migration_data,
+            'start_jira_key': start_jira_key,
             'last_updated_date': last_updated_date,
             'threads': threads,
             }
@@ -1438,7 +1444,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if issue_details_new[new_issuetype][new_field]['type'] == 'string':
                     if concatenated_value is None:
                         concatenated_value = ''
-                    added_value = '' if get_value(o_field) is None else get_value(o_field)
+                    added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
                     if new_field == 'Description':
                         concatenated_value += '' if added_value == '' else '\\\\\\ [' + o_field + ']: ' + added_value
                     else:
@@ -1488,8 +1494,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         data_value = None
         o_field_value = get_old_field(n_field)
         n_field_value = '' if (o_field_value is None or o_field_value == 'None') else o_field_value
-        if issue_details_new[issuetype][n_field]['type'] in ['string', 'number', 'date']:
+        if issue_details_new[issuetype][n_field]['type'] in ['number', 'date']:
             data_value = None if n_field_value == '' else n_field_value
+        elif issue_details_new[issuetype][n_field]['type'] in ['string']:
+            data_value = '' if n_field_value == '' else get_str_from_lst(n_field_value)
         elif issue_details_new[issuetype][n_field]['type'] in ['user', 'array']:
             if issue_details_new[issuetype][n_field]['custom type'] == 'multiuserpicker':
                 if type(n_field_value) == list and n_field_value != '':
@@ -1519,8 +1527,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             data_value = n_field_value
         
         data_val[issue_details_new[issuetype][n_field]['id']] = data_value
-    
-    if verbose_logging == 1 and detailed_logging is True:
+
+    if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
         print("[INFO] The details for update: '{}'".format(data_val))
     try:
@@ -1583,7 +1591,7 @@ def main_program():
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
-    global create_remote_link_for_old_issue, threads
+    global create_remote_link_for_old_issue, threads, default_board_name
     
     username = user.get()
     password = passwd.get()
@@ -1635,7 +1643,10 @@ def main_program():
     # Check already migrated issues
     if skip_migrated_flag == 1:
         jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' order by key desc".format(project_new)
-        last_migrated_id = get_issues_by_jql(jira_new, jql_last_migrated, max_result=1)[0]
+        issues = get_issues_by_jql(jira_new, jql_last_migrated, max_result=1)
+        last_migrated_id = issues[0] if issues is not None else None
+        if last_migrated_id is None:
+            last_migrated_id = project_new + '-1'
         old_start_jira_key = start_jira_key
         start_jira_key = project_old + '-' + str(last_migrated_id.split('-')[1])
         if old_start_jira_key < start_jira_key:
@@ -1644,7 +1655,7 @@ def main_program():
         print("[INFO] The last migrated issue is '{}'.".format(start_jira_key))
     
     # Add last updated issues to migration / update process
-    if last_updated_date != 'YYYY-MM-DD':
+    if last_updated_date not in ['YYYY-MM-DD', '']:
         jql_latest = "project = '{}' AND key <= '{}' AND key >= '{}' AND updated >= {}".format(project_old, max_processing_key, start_jira_key, last_updated_date)
         updated_issues = get_issues_by_jql(jira_old, jql_latest, max_result=0)
         for i in updated_issues:
@@ -1661,8 +1672,11 @@ def main_program():
         max_processing_key = project_old + '-' + str(int(jira_old.search_issues(jql_max, startAt=0, maxResults=0, json_result=True)['total']))
     if verbose_logging == 1:
         print("[INFO] The Number of issues to be migrated: {}".format(limit_migration_data + updated_issues_num))
-        
-    max_id = get_issues_by_jql(jira_old, jql_max, max_result=1)[0]
+    
+    try:
+        max_id = get_issues_by_jql(jira_old, jql_max, max_result=1)[0]
+    except:
+        max_id = max_processing_key
     if verbose_logging == 1:
         print("[INFO] The Maximum JIRA Key for OLD '{}' project to be migrated is '{}'.".format(project_old, max_id))
     
@@ -1677,15 +1691,19 @@ def main_program():
             if 'Team' in f_mappings.keys():
                 get_all_shared_teams()
                 break
+    else:
+        for issuestype, fields in fields_mappings.items():
+            if 'Team' in fields.keys():
+                fields_mappings[issuestype].pop('Team', None)
     
     create_temp_folder(temp_dir_name)
     
     # Sprints migration check
     if migrate_sprints_check == 1:
         if old_board_id == 0:
-            migrate_sprints(proj_old=project_old)
+            migrate_sprints(proj_old=project_old, project=project_new, name=default_board_name)
         else:
-            migrate_sprints(proj_old=project_old, board_id=old_board_id)
+            migrate_sprints(proj_old=project_old, board_id=old_board_id, project=project_new, name=default_board_name)
     else:
         if limit_migration_data != 0:
             jql_details = 'project = {} AND key >= {} AND key <= {} order by key ASC'.format(project_old, start_jira_key, max_processing_key)
