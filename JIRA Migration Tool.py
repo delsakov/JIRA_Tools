@@ -904,7 +904,11 @@ def get_fields_list_by_project(jira, project):
                 return field['custom']
     
     proj = auth_jira.project(project)
-    project_fields = auth_jira.createmeta(projectKeys=proj, expand='projects.issuetypes.fields')
+    try:
+        project_fields = auth_jira.createmeta(projectKeys=proj, expand='projects.issuetypes.fields')
+    except:
+        print("[ERROR] NO ACCESS to the '{}' project.".format(proj))
+        return {}
     is_types = project_fields['projects'][0]['issuetypes']
     issuetype_fields = {}
     for issuetype in is_types:
@@ -1375,7 +1379,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         value = get_new_value_from_mapping(value, new_field)
                 return value
     
-    def get_old_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype):
+    def get_old_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype, data_val={}):
         global fields_mappings, issue_details_old, issue_details_new
         value = None
         concatenated_value = None
@@ -1446,7 +1450,13 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for o_field in old_field:
                 if issue_details_new[new_issuetype][new_field]['type'] == 'string':
                     if concatenated_value is None:
-                        concatenated_value = ''
+                        if new_field != 'Description':
+                            concatenated_value = ''
+                        else:
+                            try:
+                                concatenated_value = data_val['description']
+                            except:
+                                concatenated_value = ''
                     added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
                     if new_field == 'Description':
                         concatenated_value += '' if added_value == '' else '\\\\\\ [' + o_field + ']: ' + added_value
@@ -1495,7 +1505,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if n_field not in issue_details_new[issuetype].keys() or n_field in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] or n_field in jira_system_fields:
             continue
         data_value = None
-        o_field_value = get_old_field(n_field)
+        o_field_value = get_old_field(n_field, data_val=data_val)
         n_field_value = '' if (o_field_value is None or o_field_value == 'None') else o_field_value
         if issue_details_new[issuetype][n_field]['type'] in ['number', 'date']:
             data_value = None if n_field_value == '' else n_field_value
@@ -1563,8 +1573,8 @@ def generate_template():
         if verbose_logging == 1:
             print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
@@ -1616,8 +1626,8 @@ def main_program():
     else:
         auth = (username, password)
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
             if create_remote_link_for_old_issue == 1:
                 atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
@@ -2071,8 +2081,8 @@ def jira_authorization_popup():
         if verbose_logging == 1:
             print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=1)
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. JIRA could be unavailable or User credentials are invalid. Exception: '{}'".format(e))
