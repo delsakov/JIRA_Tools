@@ -85,6 +85,7 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 temp_dir_name = 'Mappings/Attachments_Temp/'
 mapping_file = ''
 jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link']
+additional_mapping_fields = ['Description', 'Labels']
 limit_migration_data = 0  # 0 if all
 total_issues = 0
 start_jira_key = 1
@@ -315,6 +316,7 @@ def get_hierarchy_config():
 def prepare_template_data():
     global old_transitions, new_transitions, issue_details_old, default_validation, jira_system_fields
     global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, migrate_statuses_check
+    global additional_mapping_fields
     
     template_excel = {}
     old_statuses, new_statuses, old_issuetypes, new_issuetypes = ([], [], [], [])
@@ -361,7 +363,7 @@ def prepare_template_data():
             if details['custom'] is True and field not in jira_system_fields:
                 fields_map_lst.append([issuetype, field, ''])
     
-    new_fields_val = ['Description']
+    new_fields_val = additional_mapping_fields[:]
     for issuetype, fields in issue_details_new.items():
         for field, details in fields.items():
             if details['custom'] is True and field not in jira_system_fields:
@@ -948,7 +950,7 @@ def load_file():
 
 def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
-    global jira_system_fields
+    global jira_system_fields, additional_mapping_fields
     wb.create_sheet(title)
     ws = wb.get_sheet_by_name(title)
     
@@ -986,7 +988,7 @@ def create_excel_sheet(sheet_data, title):
     if title == 'Project':
         fields_val = {}
         for issuetype, fields in issue_details_new.items():
-            fields_val[issuetype] = ['Description']
+            fields_val[issuetype] = additional_mapping_fields[:]
             for field in fields.keys():
                 if issue_details_new[issuetype][field]['custom'] is True and field not in jira_system_fields:
                     fields_val[issuetype].append(field)
@@ -1103,6 +1105,7 @@ def get_minfields_issuetype(issue_details, all=0):
 
 def delete_extra_issues(max_processing_key):
     global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag
+    global username, password
     
     # Calculating total Number of Issues in OLD JIRA Project
     jql_total_old = "project = '{}' AND key >= {} AND key <= {}".format(project_old, start_jira_key, max_processing_key)
@@ -1121,12 +1124,13 @@ def delete_extra_issues(max_processing_key):
         if total_old == total_new:
             if verbose_logging == 1:
                 print("[INFO] Total 'dummy' issues to be deleted in new project: '{}'.".format(total_new_for_deletion))
-            
+
             print("[START] 'Dummy' issue deletion is started. Please wait...")
             issues_for_delete = get_issues_by_jql(jira_new, jql_total_new_for_deletion, max_result=0)
-            for i in issues_for_delete:
-                issue = jira_new.issue(i)
-                issue.delete()
+            if issues_for_delete is not None:
+                atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
+                for i in issues_for_delete:
+                    atlassian_jira_new.delete_issue(i)
             print("[END] 'Dummy' issues has been successfuly removed from target '{}' JIRA Project.".format(project_new), '', sep='\n')
         
         else:
@@ -1365,7 +1369,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(value) == []:
                     return None
                 else:
-                    return {"name": get_new_value_from_mapping(value.name, new_field)}
+                    if new_field == 'Priority' and get_new_value_from_mapping(value.name, new_field) == '':
+                        return {"name": issue_details_new[issuetype]['Priority']['default value']}
+                    else:
+                        return {"name": get_new_value_from_mapping(value.name, new_field)}
             elif hasattr(value, 'value'):
                 return {"value": get_new_value_from_mapping(value.value, new_field)}
             else:
@@ -1468,7 +1475,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     concatenated_value += 0 if get_value(o_field) is None else get_value(o_field)
                 elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
                     if concatenated_value is None:
-                        concatenated_value = []
+                        if new_field != 'Labels':
+                            concatenated_value = []
+                        else:
+                            concatenated_value = data_val['labels']
                     concatenated_value.append('' if get_value(o_field) is None else get_value(o_field))
             value = concatenated_value
         else:
@@ -1553,7 +1563,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                             data_value.append({"name": None})
                 else:
                     data_value = None if n_field_value == '' else [{"name": i} if i != '' else {"name": None} for i in n_field_value]
-            elif issue_details_new[issuetype][n_field]['custom type'] == 'labels':
+            elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
                 if type(n_field_value) == list and n_field_value != '':
                     data_value = None if n_field_value == '' else [i for i in n_field_value]
                 else:
