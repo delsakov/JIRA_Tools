@@ -18,7 +18,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.2'
+current_version = '0.3'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -82,7 +82,7 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
                                    }
 
 # Migration configs
-temp_dir_name = 'Mappings/Attachments_Temp/'
+temp_dir_name = 'Attachments_Temp/'
 mapping_file = ''
 jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link']
 additional_mapping_fields = ['Description', 'Labels']
@@ -216,24 +216,34 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                 print("[WARNING] The mapping of '{}' field for '{}' Issuetype not found. Field values will be dropped.".format(d[1], d[0]))
                     else:
                         if len(d) <= 2:
-                            if mapping_type == 0:
-                                value_mappings[d[0].strip()] = d[1].split(',')
-                            else:
-                                if d[1].strip() not in value_mappings.keys():
-                                    value_mappings[d[1].strip()] = d[0].strip().split(',')
+                            try:
+                                if mapping_type == 0:
+                                    value_mappings[d[0].strip()] = d[1].split(',')
                                 else:
-                                    value_mappings[d[1].strip()].extend(d[0].strip().split(','))
+                                    if d[1].strip() not in value_mappings.keys():
+                                        value_mappings[d[1].strip()] = d[0].strip().split(',')
+                                    else:
+                                        value_mappings[d[1].strip()].extend(d[0].strip().split(','))
+                            except:
+                                print("[ERROR] Data on the sheet '{}' is invalid, Skipping...".format(excel_sheet_name))
+                                continue
                         else:
-                            if mapping_type == 1:
-                                if d[1] + ' --> ' + d[2] not in value_mappings.keys():
-                                    value_mappings[d[1] + ' --> ' + d[2]] = d[0].strip().split(',')
-                                else:
-                                    value_mappings[d[1] + ' --> ' + d[2]].extend(d[0].strip().split(','))
+                            try:
+                                if mapping_type == 1:
+                                    if d[1] + ' --> ' + d[2] not in value_mappings.keys():
+                                        value_mappings[d[1] + ' --> ' + d[2]] = d[0].strip().split(',')
+                                    else:
+                                        value_mappings[d[1] + ' --> ' + d[2]].extend(d[0].strip().split(','))
+                            except:
+                                print("[ERROR] Data on the sheet '{}' is invalid, Skipping...".format(excel_sheet_name))
+                                continue
             
             if excel_sheet_name not in ['Project', 'Issuetypes', 'Statuses', 'Fields']:
                 field_value_mappings[excel_sheet_name] = value_mappings
     except:
-        print("[ERROR] '{}' file not found. Skipping Mappings processing...".format(file_path))
+        print("[ERROR] '{}' file not found. Mappings can't be processed.".format(file_path))
+        os.system("pause")
+        exit()
     for k, v in issuetypes_mappings.items():
         issues = []
         for issuetype in v['issuetypes']:
@@ -247,9 +257,8 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 
 def get_transitions(project, jira_url, new=False):
-    global old_transitions, new_transitions, auth, migrate_statuses_check
+    global old_transitions, new_transitions, auth, migrate_statuses_check, headers
     print("[START] Retrieving Transitions and Statuses for '{}' project from JIRA.".format(project))
-    headers = {"Content-type": "application/json", "Accept": "application/json"}
     
     def get_workflows(project, jira_url, new):
         global sub_tasks, auth
@@ -547,8 +556,8 @@ def clean_temp_folder(folder):
     shutil.rmtree(folder)
 
 
-def get_all_shared_teams(verbose_logging=verbose_logging):
-    global teams
+def get_all_shared_teams():
+    global teams, verbose_logging, auth, headers
     print("[START] Reading ALL available shared teams.")
     i = 1
     while True:
@@ -570,7 +579,7 @@ def get_team_id(team_name):
     global teams, team_project_prefix, auth
     
     def create_new_team():
-        global teams
+        global teams, auth, headers
         url_create = JIRA_BASE_URL_NEW + JIRA_team_api
         team_name_to_create = team_project_prefix + team_name
         body = eval('{"title": team_name_to_create, "shareable": "true"}')
@@ -587,7 +596,7 @@ def get_team_id(team_name):
 
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
     global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth
-    global max_processing_key, start_jira_key
+    global max_processing_key, start_jira_key, headers
     
     print()
     new_board, n = (0, 0)
@@ -1061,7 +1070,7 @@ def create_excel_sheet(sheet_data, title):
             wb.remove_sheet(wb[s])
 
 def save_excel():
-    global zoom_scale, mapping_file
+    global zoom_scale, mapping_file, project_old, project_new
     try:
         if mapping_file == '':
             mapping_file = "Mappings '{}'-'{}'.xlsx".format(project_old, project_new)
@@ -1104,8 +1113,12 @@ def get_minfields_issuetype(issue_details, all=0):
 
 
 def delete_extra_issues(max_processing_key):
-    global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag
-    global username, password
+    global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag, threads
+    
+    def delete_issue(key):
+        global username, password
+        atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
+        atlassian_jira_new.delete_issue(key)
     
     # Calculating total Number of Issues in OLD JIRA Project
     jql_total_old = "project = '{}' AND key >= {} AND key <= {}".format(project_old, start_jira_key, max_processing_key)
@@ -1124,15 +1137,12 @@ def delete_extra_issues(max_processing_key):
         if total_old == total_new:
             if verbose_logging == 1:
                 print("[INFO] Total 'dummy' issues to be deleted in new project: '{}'.".format(total_new_for_deletion))
-
             print("[START] 'Dummy' issue deletion is started. Please wait...")
             issues_for_delete = get_issues_by_jql(jira_new, jql_total_new_for_deletion, max_result=0)
             if issues_for_delete is not None:
-                atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
-                for i in issues_for_delete:
-                    atlassian_jira_new.delete_issue(i)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as delete_executor:
+                    future = [delete_executor.submit(delete_issue, i) for i in issues_for_delete]
             print("[END] 'Dummy' issues has been successfuly removed from target '{}' JIRA Project.".format(project_new), '', sep='\n')
-        
         else:
             print("[ERROR] Not ALL issues have been migrated. 'Dummy' issues will not be removed to avoid any mapping issues.")
     else:
@@ -1488,19 +1498,19 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             value = get_value(old_field[0])
         return value
     
-    def update_issuetype(requested_issuetype=issuetype, old_issue=old_issue):
+    def update_issuetype(issuetype, old_issutype, old_issue=old_issue):
         global issue_details_new
         data = {}
         mandatory_fields = get_minfields_issuetype(issue_details_new, all=1)
-        data['issuetype'] = {'name': requested_issuetype}
+        data['issuetype'] = {'name': issuetype}
         data['summary'] = old_issue.fields.summary
-        for field in mandatory_fields[requested_issuetype]:
-            for f in issue_details_new[issuetype]:
-                if issue_details_new[issuetype][f]['id'] == field:
-                    default_value = issue_details_new[issuetype][f]['default value']
-                    allowed = issue_details_new[issuetype][f]['allowed values']
-                    type = issue_details_new[issuetype][f]['type']
-                    custom_type = issue_details_new[issuetype][f]['custom type']
+        for field in mandatory_fields[old_issutype]:
+            for f in issue_details_new[old_issutype]:
+                if issue_details_new[old_issutype][f]['id'] == field:
+                    default_value = issue_details_new[old_issutype][f]['default value']
+                    allowed = issue_details_new[old_issutype][f]['allowed values']
+                    type = issue_details_new[old_issutype][f]['type']
+                    custom_type = issue_details_new[old_issutype][f]['custom type']
                     if type == 'option':
                         value = allowed[0] if default_value is None else default_value
                         data[field] = eval('{"value": "' + value + '"}')
@@ -1533,7 +1543,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     data_val['summary'] = old_issue.fields.summary
     data_val['issuetype'] = {'name': issuetype}
     if new_issuetype != issuetype:
-        update_issuetype()
+        update_issuetype(issuetype, new_issuetype)
     
     # System fields
     for n_field, n_values in issue_details_new[issuetype].items():
@@ -1659,10 +1669,15 @@ def main_program():
         change_configs()
     
     # Checking the Mapping File available
-    if os.path.exists(mapping_file) is False:
+    if os.path.exists(mapping_file) is False or mapping_file == '.xlsx':
         load_file()
     main.destroy()
-    
+
+    if os.path.exists(mapping_file) is False or mapping_file == '.xlsx':
+        print("[ERROR] Mapping File not found. Migration failed.")
+        os.system("pause")
+        exit()
+
     # Checking the JIRA credentials
     if len(username) < 6 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
@@ -2238,90 +2253,99 @@ print()
 main = tk.Tk()
 Title = main.title("JIRA Migration Tool" + " v_" + current_version)
 
-tk.Label(main, text="Generate new Mapping Template for JIRA migration:", foreground="black", font=("Helvetica", 11), pady=10).grid(row=0, column=0, columnspan=3, rowspan=2)
-tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=4, rowspan=2)
+tk.Label(main, text="Mapping Template Generation", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=0, column=0, columnspan=2, rowspan=2, sticky=W, padx=80)
+tk.Label(main, text="Step 1", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=0, column=0, columnspan=3, rowspan=2, sticky=W, padx=15)
+tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=0, rowspan=2)
 
-tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=2, columnspan=4)
+tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=2, columnspan=4)
 
-tk.Label(main, text="For migration process please enter your Username / Password for JIRA access", foreground="black", font=("Helvetica", 10), padx=10, wraplength=260).grid(row=3, column=0, rowspan=2, columnspan=3, sticky=W, padx=10)
-tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=3, column=1, pady=5, columnspan=2, sticky=W, padx=110)
-tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=4, column=1, pady=5, columnspan=2, sticky=W, padx=110)
-user = tk.Entry(main)
-user.grid(row=3, column=2, pady=5, sticky=W, columnspan=2, padx=30)
-passwd = tk.Entry(main, width=20, show="*")
-passwd.grid(row=4, column=2, pady=5, sticky=W, columnspan=2, padx=30)
-
-tk.Button(main, text='Start JIRA Migration', font=("Helvetica", 9, "bold"), state='active', command=main_program, width=20, heigh=2).grid(row=3, column=3, pady=4, padx=10, rowspan=2)
-
-tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=5, columnspan=4)
-
-tk.Label(main, text="Upload Mapping Template:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=0, rowspan=1, padx=20, sticky=W)
-file = tk.Entry(main, width=54, textvariable=mapping_file)
+tk.Label(main, text="Mapping Template:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=3, column=0, rowspan=1, padx=80, sticky=W, columnspan=1)
+file = tk.Entry(main, width=77, textvariable=mapping_file)
 file.insert(END, mapping_file)
-file.grid(row=6, column=1, columnspan=2, padx=0)
-tk.Button(main, text='Browse', command=load_file, width=15).grid(row=6, column=3, pady=3, padx=8)
+file.grid(row=3, column=0, columnspan=3, sticky=E, padx=0)
+tk.Button(main, text='Browse', command=load_file, width=15).grid(row=3, column=3, pady=3, padx=8)
 
-tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=7, columnspan=4)
+tk.Label(main, text="Migration Configuration", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=4, column=0, columnspan=4, sticky=W, padx=80)
 
-tk.Label(main, text="Please select the items to be migrated:", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=8, column=0, columnspan=4, sticky=W, padx=10)
+tk.Label(main, text="Step 2", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=4, column=0, columnspan=3, rowspan=1, sticky=W, padx=15)
 
 process_fixversions = IntVar(value=migrate_fixversions_check)
-Checkbutton(main, text="Migrate all fixVersions / Releases from Source JIRA.", font=("Helvetica", 9, "italic"), variable=process_fixversions).grid(row=9, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate all fixVersions / Releases from Source JIRA.", font=("Helvetica", 9, "italic"), variable=process_fixversions).grid(row=5, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_fixversions.trace('w', change_migrate_fixversions)
 
 process_components = IntVar(value=migrate_components_check)
-Checkbutton(main, text="Migrate all Components from Source JIRA.", font=("Helvetica", 9, "italic"), variable=process_components).grid(row=10, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate all Components from Source JIRA.", font=("Helvetica", 9, "italic"), variable=process_components).grid(row=6, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_components.trace('w', change_migrate_components)
 
 process_sprints = IntVar(value=migrate_sprints_check)
-Checkbutton(main, text="Migrate Sprints (specified in Configs) from Source JIRA (Agile Add-on).", font=("Helvetica", 9, "italic"), variable=process_sprints).grid(row=11, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate Sprints (specified in Configs) from Source JIRA (Agile Add-on).", font=("Helvetica", 9, "italic"), variable=process_sprints).grid(row=7, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_sprints.trace('w', change_migrate_sprints)
 
 process_teams = IntVar(value=migrate_teams_check)
-Checkbutton(main, text="Migrate Teams from Source JIRA (Portfolio Add-on).", font=("Helvetica", 9, "italic"), variable=process_teams).grid(row=12, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate Teams from Source JIRA (Portfolio Add-on).", font=("Helvetica", 9, "italic"), variable=process_teams).grid(row=8, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_teams.trace('w', change_migrate_teams)
 
 process_metadata = IntVar(value=migrate_metadata_check)
-Checkbutton(main, text="Migrate Metadata (field values) for Issues.", font=("Helvetica", 9, "italic"), variable=process_metadata).grid(row=13, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate Metadata (field values) for Issues.", font=("Helvetica", 9, "italic"), variable=process_metadata).grid(row=9, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_metadata.trace('w', change_migrate_metadata)
 
 process_attachments = IntVar(value=migrate_attachments_check)
-Checkbutton(main, text="Migrate all Attachments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_attachments).grid(row=14, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate all Attachments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_attachments).grid(row=10, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_attachments.trace('w', change_migrate_attachments)
 
 process_comments = IntVar(value=migrate_comments_check)
-Checkbutton(main, text="Migrate all Comments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_comments).grid(row=15, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate all Comments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_comments).grid(row=11, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_comments.trace('w', change_migrate_comments)
 
 process_links = IntVar(value=migrate_links_check)
-Checkbutton(main, text="Migrate all Links from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_links).grid(row=16, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Migrate all Links from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_links).grid(row=12, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_links.trace('w', change_migrate_links)
 
 process_statuses = IntVar(value=migrate_statuses_check)
-Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issues (Project Admin access required).", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=17, sticky=W, padx=20, columnspan=4, pady=0)
+Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issues (Project Admin access required).", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=13, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_statuses.trace('w', change_migrate_statuses)
 
-tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=18, columnspan=4)
+tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=7, column=3, pady=4, rowspan=3)
+
+tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=14, columnspan=4)
+
+tk.Label(main, text="Migration Process", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=15, column=0, columnspan=4, sticky=W, padx=80)
+
+tk.Label(main, text="Step 3", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=15, column=0, columnspan=3, rowspan=1, sticky=W, padx=15)
+
+
+tk.Label(main, text="For migration process please enter your Username / Password for JIRA(s) access", foreground="black", font=("Helvetica", 10), padx=10, wraplength=260).grid(row=16, column=0, rowspan=2, columnspan=3, sticky=W, padx=80)
+tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=16, column=1, pady=5, columnspan=3, sticky=W, padx=20)
+tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=17, column=1, pady=5, columnspan=3, sticky=W, padx=20)
+user = tk.Entry(main)
+user.grid(row=16, column=1, pady=5, sticky=W, columnspan=3, padx=100)
+passwd = tk.Entry(main, width=20, show="*")
+passwd.grid(row=17, column=1, pady=5, sticky=W, columnspan=3, padx=100)
+
+tk.Button(main, text='Start JIRA Migration', font=("Helvetica", 9, "bold"), state='active', command=main_program, width=20, heigh=2).grid(row=16, column=3, pady=4, padx=10, rowspan=2)
+
+tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=18, columnspan=4)
+
+tk.Label(main, text="Additional Configuration", foreground="black", font=("Helvetica", 10, "italic", "underline"), pady=10).grid(row=19, column=0, columnspan=4, sticky=W, padx=300)
 
 process_logging = IntVar(value=verbose_logging)
-Checkbutton(main, text="Switch Verbose Logging ON for migration process.", font=("Helvetica", 9, "italic"), variable=process_logging).grid(row=19, sticky=W, padx=20, columnspan=3, pady=0)
+Checkbutton(main, text="Switch Verbose Logging ON for migration process.", font=("Helvetica", 9, "italic"), variable=process_logging).grid(row=20, column=0, sticky=W, padx=20, columnspan=3, pady=0)
 process_logging.trace('w', change_logging)
 
 process_dummy_del = IntVar(value=delete_dummy_flag)
-Checkbutton(main, text="Skip deletion of dummy issues (for testing purposes).", font=("Helvetica", 9, "italic"), variable=process_dummy_del).grid(row=20, sticky=W, padx=20, columnspan=3, pady=0)
+Checkbutton(main, text="Skip deletion of dummy issues (for testing purposes).", font=("Helvetica", 9, "italic"), variable=process_dummy_del).grid(row=21, column=0, sticky=W, padx=20, columnspan=3, pady=0)
 process_dummy_del.trace('w', change_dummy)
 
 process_old_linkage = IntVar(value=create_remote_link_for_old_issue)
-Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 9, "italic"), variable=process_old_linkage).grid(row=19, column=2, sticky=E, padx=40, columnspan=2, pady=0)
+Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 9, "italic"), variable=process_old_linkage).grid(row=20, column=1, sticky=W, padx=70, columnspan=3, pady=0)
 process_old_linkage.trace('w', change_linking)
 
 process_non_migrated = IntVar(value=skip_migrated_flag)
-Checkbutton(main, text="Skip already migrated issues.", font=("Helvetica", 9, "italic"), variable=process_non_migrated).grid(row=20, column=2, sticky=E, padx=77, columnspan=2, pady=0)
+Checkbutton(main, text="Skip already migrated issues.", font=("Helvetica", 9, "italic"), variable=process_non_migrated).grid(row=21, column=1, sticky=W, padx=70, columnspan=3, pady=0)
 process_non_migrated.trace('w', change_migrated)
 
-tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=11, column=3, pady=4, rowspan=3, sticky=W)
-tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=21, column=0, pady=8, columnspan=4, rowspan=2)
+tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=22, column=0, pady=8, columnspan=4, rowspan=2)
 
-tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=22, column=3, sticky=E, padx=10)
+tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=23, column=1, sticky=E, padx=20, columnspan=3)
 
 tk.mainloop()
