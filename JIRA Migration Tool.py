@@ -1144,12 +1144,12 @@ def create_dummy_issue(jira, project, issuetype, fields, old_issue):
     new_data['summary'] = "Dummy issue - for migration"
 
     for field in fields:
-        for f in issue_details_old[issuetype]:
-            if issue_details_old[issuetype][f]['id'] == field:
-                default_value = issue_details_old[issuetype][f]['default value']
-                allowed = issue_details_old[issuetype][f]['allowed values']
-                type = issue_details_old[issuetype][f]['type']
-                custom_type = issue_details_old[issuetype][f]['custom type']
+        for f in issue_details_new[issuetype]:
+            if issue_details_new[issuetype][f]['id'] == field:
+                default_value = issue_details_new[issuetype][f]['default value']
+                allowed = issue_details_new[issuetype][f]['allowed values']
+                type = issue_details_new[issuetype][f]['type']
+                custom_type = issue_details_new[issuetype][f]['custom type']
                 if type == 'option':
                     value = allowed[0] if default_value is None else default_value
                     new_data[field] = eval('{"value": "' + value + '"}')
@@ -1475,6 +1475,40 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             value = get_value(old_field[0])
         return value
     
+    def update_issuetype(requested_issuetype=issuetype, old_issue=old_issue):
+        global issue_details_new
+        data = {}
+        mandatory_fields = get_minfields_issuetype(issue_details_new, all=1)
+        data['issuetype'] = {'name': requested_issuetype}
+        data['summary'] = old_issue.fields.summary
+        for field in mandatory_fields[requested_issuetype]:
+            for f in issue_details_new[issuetype]:
+                if issue_details_new[issuetype][f]['id'] == field:
+                    default_value = issue_details_new[issuetype][f]['default value']
+                    allowed = issue_details_new[issuetype][f]['allowed values']
+                    type = issue_details_new[issuetype][f]['type']
+                    custom_type = issue_details_new[issuetype][f]['custom type']
+                    if type == 'option':
+                        value = allowed[0] if default_value is None else default_value
+                        data[field] = eval('{"value": "' + value + '"}')
+                    elif field in ['components', 'versions', 'fixVersions'] or custom_type == 'multiversion':
+                        value = allowed[0] if default_value is None else default_value
+                        data[field] = eval('[{"name": "' + value + '"}]')
+                    elif type == 'option-with-child':
+                        data[field] = eval('{"value": "' + allowed[0][0] + '", "child": {"value": "' + allowed[0][1] + '"}}')
+                    elif type == 'string':
+                        data[field] = 'Dummy' if default_value is None else default_value
+                    elif type == 'number':
+                        data[field] = 0 if default_value is None else default_value
+                    elif type == 'array':
+                        data[field] = ['Dummy'] if default_value is None else [default_value]
+                    else:
+                        data[field] = default_value
+        try:
+            new_issue.update(notify=False, fields=data)
+        except:
+            new_issue.update(notify=True, fields=data)
+    
     data_val = {}
     new_issuetype = new_issue.fields.issuetype.name
     # Checking for Sub-Task and convert to Sub-Task if necessary
@@ -1486,10 +1520,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     data_val['summary'] = old_issue.fields.summary
     data_val['issuetype'] = {'name': issuetype}
     if new_issuetype != issuetype:
-        try:
-            new_issue.update(notify=False, fields=data_val)
-        except:
-            new_issue.update(notify=True, fields=data_val)
+        update_issuetype()
     
     # System fields
     for n_field, n_values in issue_details_new[issuetype].items():
