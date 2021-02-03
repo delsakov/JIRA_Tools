@@ -1479,7 +1479,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                             concatenated_value = []
                         else:
                             concatenated_value = data_val['labels']
-                    concatenated_value.append('' if get_value(o_field) is None else get_value(o_field))
+                    if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
+                        concatenated_value.append('' if get_value(o_field) is None else get_value(o_field).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                    else:
+                        concatenated_value.append('' if get_value(o_field) is None else get_value(o_field))
             value = concatenated_value
         else:
             value = get_value(old_field[0])
