@@ -1686,11 +1686,6 @@ def main_program():
     else:
         jql_max = 'project = {} order by key desc'.format(project_old)
         max_processing_key = project_old + '-' + str(int(jira_old.search_issues(jql_max, startAt=0, maxResults=0, json_result=True)['total']))
-    if verbose_logging == 1:
-        number_of_migrated = 0
-        for v in items_lst.values():
-            number_of_migrated += len(v)
-        print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
     
     try:
         max_id = get_issues_by_jql(jira_old, jql_max, max_result=1)[0]
@@ -1699,12 +1694,15 @@ def main_program():
     if verbose_logging == 1:
         print("[INFO] The Maximum JIRA Key for OLD '{}' project to be migrated is '{}'.".format(project_old, max_id))
     
+    # Components Migration
     if migrate_components_check == 1:
         migrate_components()
     
+    # FixVersions Migration
     if migrate_fixversions_check == 1:
         migrate_versions()
     
+    # Teams Migration (skipping if no mapping to Portfolio Teams)
     if migrate_teams_check == 1:
         for f_mappings in fields_mappings.values():
             if 'Team' in f_mappings.keys():
@@ -1715,7 +1713,9 @@ def main_program():
             if 'Team' in fields.keys():
                 fields_mappings[issuestype].pop('Team', None)
     
-    create_temp_folder(temp_dir_name)
+    # Creating / Cleaning Folder for Attachments migration
+    if migrate_attachments_check == 1:
+        create_temp_folder(temp_dir_name)
     
     # Sprints migration check
     if migrate_sprints_check == 1:
@@ -1730,20 +1730,25 @@ def main_program():
             jql_details = 'project = {} AND key >= {} order by key ASC'.format(project_old, start_jira_key)
         get_issues_by_jql(jira_old, jql=jql_details, details=True, issue_details=issue_details_old)
     
+    # Extra Logging
     if verbose_logging == 1:
-        if limit_migration_data == 0:
-            print("[INFO] The Number of issues to be migrated: {}".format(total_issues))
-        print()
+        number_of_migrated = 0
+        for v in items_lst.values():
+            number_of_migrated += len(v)
+        print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
         print('[INFO] The list of migrated issues by type:', items_lst)
     
+    # Main Migration block
     for i in range(4):
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] == str(i):
                 if k in items_lst.keys():
                     print("[INFO] The total number of '{}' issuetype: {}".format(k, len(items_lst[k])))
                 migrate_issues(issuetype=k)
-    
-    clean_temp_folder(temp_dir_name)
+
+    # Cleaning Folder for Attachments migration
+    if migrate_attachments_check == 1:
+        clean_temp_folder(temp_dir_name)
     
     # Update and Close Sprints - after migration of issues are done
     if migrate_sprints_check == 1:
