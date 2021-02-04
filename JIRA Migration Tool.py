@@ -428,15 +428,12 @@ def prepare_template_data():
     if migrate_statuses_check == 1:
         new_statuses_val = []
         for i in new_statuses:
-            new_statuses_val.append(i[1].title())
+            new_statuses_val.append(i[1])
         default_validation['Statuses'] = '"' + get_str_from_lst(list(set(new_statuses_val)), spacing='') + '"'
     default_validation['Fields'] = '"' + get_str_from_lst(list(set(new_fields_val)), spacing='') + '"'
     new_issuetypes_val = []
     for i in new_issuetypes:
-        try:
-            new_issuetypes_val.append(i.title())
-        except:
-            new_issuetypes_val.append(i)
+        new_issuetypes_val.append(i)
     default_validation['Issuetypes'] = '"' + get_str_from_lst(list(set(new_issuetypes_val)), spacing='') + '"'
     default_validation['Priority'] = '"' + get_str_from_lst(list(set(priority_new_lst)), spacing='') + '"'
     
@@ -566,7 +563,11 @@ def get_all_shared_teams():
         teams_string = r.content.decode('utf-8')
         if len(teams_string) < 5:
             break
-        teams_lst = json.loads(teams_string)
+        try:
+            teams_lst = json.loads(teams_string)
+        except:
+            print("[ERROR] Portfolio Add on not available for Target JIRA project.")
+            return
         for team in teams_lst:
             teams[team['title']] = team['id']
         if verbose_logging == 1:
