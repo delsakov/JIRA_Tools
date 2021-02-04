@@ -656,14 +656,25 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
 
 
 def migrate_components():
+    global threads, jira_new, jira_old
     print("[START] Components migration has been started.")
     old_components = jira_old.project_components(project_old)
     new_components = jira_new.project_components(project_new)
     
+    def update_component(data):
+        global jira_new, verbose_logging
+        name, project, description, lead_name, assignee_type, assignee_valid = data
+        try:
+            jira_new.create_component(name, project, description=description, leadUserName=lead_name, assigneeType=assignee_type, isAssigneeTypeValid=assignee_valid)
+            if verbose_logging == 1:
+                print("[INFO] '{}' Component has been added.".format(name))
+        except Exception as e:
+            print('Exception: {}'.format(e.text))
+
     new_components_lst = []
+    components_data = []
     for new_component in new_components:
         new_components_lst.append(new_component.name)
-    
     for component in old_components:
         description, assignee_type, lead_name, assignee_valid = (None, None, None, None)
         if component.name not in new_components_lst and component.archived is False:
@@ -675,22 +686,35 @@ def migrate_components():
                 lead_name = component.lead.name
             if hasattr(component, 'isAssigneeTypeValid'):
                 assignee_valid = component.isAssigneeTypeValid
-            try:
-                jira_new.create_component(component.name, project_new, description=description, leadUserName=lead_name, assigneeType=assignee_type, isAssigneeTypeValid=assignee_valid)
-            except Exception as e:
-                print('Exception: {}'.format(e.text))
+            components_data.append((component.name, project_new, description, lead_name, assignee_type, assignee_valid))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as components_executor:
+        futures = [components_executor.submit(update_component, data) for data in components_data]
+    
     print("[END] All components have been succsessfully migrated.", '', sep='\n')
 
 
 def migrate_versions():
+    global threads, jira_new, jira_old
+    
     print("[START] FixVersions (Releases) migration has been started.")
     old_versions = jira_old.project_versions(project_old)
     new_versions = jira_new.project_versions(project_new)
     
+    def update_version(data):
+        global jira_new, verbose_logging
+        name, project, description, release_date, start_date, archieved, released = data
+        try:
+            jira_new.create_version(name, project, description=description, releaseDate=release_date, startDate=start_date, archived=archieved, released=released)
+            if verbose_logging == 1:
+                print("[INFO] '{}' fixVersion has been added.".format(name))
+        except Exception as e:
+            print('Exception: {}'.format(e.text))
+        
+    versions = []
     new_versions_lst = []
     for new_version in new_versions:
         new_versions_lst.append(new_version.name)
-    
     for version in old_versions:
         description, release_date, start_date, archieved, released = (None, None, None, None, None)
         if version.name not in new_versions_lst:
@@ -704,10 +728,11 @@ def migrate_versions():
                 archieved = version.archieved
             if hasattr(version, 'released'):
                 released = version.released
-            try:
-                jira_new.create_version(version.name, project_new, description=description, releaseDate=release_date, startDate=start_date, archived=archieved, released=released)
-            except Exception as e:
-                print('Exception: {}'.format(e.text))
+            versions.append((version.name, project_new, description, release_date, start_date, archieved, released))
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as versions_executor:
+        futures = [versions_executor.submit(update_version, data) for data in versions]
+    
     print("[END] All FixVersions (Releases) have been succsessfully migrated.", '', sep='\n')
 
 
@@ -1597,7 +1622,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
 
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
-        print("[INFO] The details for update: '{}'".format(data_val))
+        # print("[INFO] The details for update: '{}'".format(data_val))
     try:
         new_issue.update(notify=False, fields=data_val)
     except:
@@ -1829,6 +1854,10 @@ def main_program():
         
     # Delete issues with Summary = 'Dummy Issue'
     delete_extra_issues(max_processing_key)
+    
+    print("[INFO] Migration successfully complete.")
+    os.system("pause")
+    exit()
 
 
 def overwrite_popup():
