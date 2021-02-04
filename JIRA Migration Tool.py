@@ -1501,7 +1501,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                 concatenated_value = ''
                     added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
                     if new_field == 'Description':
-                        concatenated_value += '' if added_value == '' else '\\\\\\ [' + o_field + ']: ' + added_value
+                        concatenated_value += '' if added_value == '' else ' \\\\ \\\\ *[' + o_field + ']:* ' + added_value
                     else:
                         concatenated_value += '' if get_str_from_lst(added_value) == '' else '[' + o_field + ']: ' + get_str_from_lst(added_value) + ' '
                 elif issue_details_new[new_issuetype][new_field]['type'] == 'number':
