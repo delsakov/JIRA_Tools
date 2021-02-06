@@ -114,6 +114,7 @@ validation_error = 0
 delete_dummy_flag = 0
 skip_migrated_flag = 1
 last_updated_days_check = 1
+including_dependencies_flag = 1
 
 # Concurrent processing configs
 default_max_retries = 3
@@ -385,6 +386,7 @@ def prepare_template_data():
                 new_fields_val.append(field.title())
     
     # Statuses
+    statuses_map_lst = []
     if migrate_statuses_check == 1:
         statuses_map_lst = [['Source Issue Type', 'Source Status', 'Target Status']]
         statuses_map_lst.extend(old_statuses)
@@ -1227,6 +1229,7 @@ def create_excel_sheet(sheet_data, title):
             wb.remove_sheet(wb[s])
 
 def save_excel():
+    """Saving prepared Excel File. Applying zooming / scaling upon saving."""
     global zoom_scale, mapping_file, project_old, project_new
     try:
         if mapping_file == '':
@@ -1251,6 +1254,7 @@ def save_excel():
 
 
 def get_minfields_issuetype(issue_details, all=0):
+    """Function for find out the issue type with minimal mandatory fields for Dummy issue creation."""
     min = 999
     i_types = {}
     for issuetype, fields in issue_details.items():
@@ -1270,6 +1274,7 @@ def get_minfields_issuetype(issue_details, all=0):
 
 
 def delete_extra_issues(max_id):
+    """Function for removal extra Dummy Issues created via Migration Process (to have same ids while migration)"""
     global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag, threads
     global recently_updated, max_retries, default_max_retries
     
@@ -1343,6 +1348,7 @@ def delete_extra_issues(max_id):
 
 
 def create_dummy_issue(jira, project, issuetype, fields, old_issue):
+    """Creating Dummy Issue with all defaulted mandatory fields + specific Summary for further processing."""
     global issue_details_new
 
     new_data = {}
@@ -1437,6 +1443,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
 
 
 def load_config(message=True):
+    """Loading pre-saved values from 'config.json' file."""
     global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date, start_jira_key
     global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads
     
@@ -1517,6 +1524,7 @@ def save_config(message=True):
 
 
 def update_new_issue_type(old_issue, new_issue, issuetype):
+    """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
     old_issuetype = old_issue.fields.issuetype.name
     
@@ -1627,6 +1635,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         old_value = {"value": value_value, "child": {"value": value_child}}
                     except:
                         pass
+                elif issue_details_old[old_issuetype][field]['custom type'] in ['multiversion', 'multiuserpicker'] and old_value is not None:
+                    old_value = [item.name for item in old_value]
             elif issue_details_old[old_issuetype][field]['type'] in ['option', 'user']:
                 try:
                     old_value = value.value
@@ -1639,10 +1649,25 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if value is not None:
                     value_value = value.value
                     value_child = value.child.value
-                    if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
-                        old_value = {"value": value_value, "child": {"value": value_child}}
+                    mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
+                    if mapped_value is not None:
+                        mapped_value_value = value.split(' --> ')[0]
+                        mapped_value_child = value.split(' --> ')[1]
                     else:
-                        old_value = value_value + ' -> ' + value_child
+                        mapped_value_value = value_value
+                        mapped_value_child = value_child
+                    if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
+                        if issue_details_new[new_issuetype][new_field]['validated'] is True:
+                            for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                                if mapped_value_value == values[0] and mapped_value_child == values[1]:
+                                    old_value = {"value": mapped_value_value, "child": {"value": mapped_value_child}}
+                                    return old_value
+                                else:
+                                    old_value = None
+                        else:
+                            old_value = {"value": value_value, "child": {"value": value_child}}
+                    else:
+                        old_value = value_value + ' --> ' + value_child
             elif issue_details_new[new_issuetype][new_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
                 if issuetype in sub_tasks.keys():
                     return None
@@ -1831,6 +1856,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
 
 def generate_template():
+    """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
     global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads
     
@@ -1880,12 +1906,13 @@ def generate_template():
 
 
 def main_program():
+    """Migration Processing Main Function - covering 'End to End' process."""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
     global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
-    global recently_updated_days, recently_updated, max_id
+    global recently_updated_days, recently_updated, max_id, including_dependencies_flag
 
     def find_max_id(key):
         global jira_old
@@ -1973,6 +2000,13 @@ def main_program():
         if start_jira_key > max_processing_key:
             start_jira_key = max_processing_key
         recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
+        if including_dependencies_flag == 1:
+            dependencies_jql = "project = '{}' {}".format(project_old, recently_updated)
+            jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
+                               "issueFunction in subtasksOf(\"{}\") OR " \
+                               "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
+            recently_updated = recently_updated + " AND ({}) ".format(jql_dependencies)
+            # get_issues_by_jql(jira_old, jql=jql_dependencies, details=True)
 
     # Check already migrated issues
     if skip_migrated_flag == 1:
@@ -2517,8 +2551,16 @@ def change_migrated(*args):
 
 
 def change_process_last_updated(*args):
-    global last_updated_days_check
+    global last_updated_days_check, including_dependencies_flag
     last_updated_days_check = process_last_updated.get()
+    if last_updated_days_check == 0:
+        including_dependencies_flag = 0
+        process_dependencies.set(including_dependencies_flag)
+
+
+def change_dependencies(*args):
+    global including_dependencies_flag
+    including_dependencies_flag = process_dependencies.get()
 
 
 # ------------------ MAIN PROGRAM -----------------------------------
@@ -2628,6 +2670,10 @@ process_last_updated.trace('w', change_process_last_updated)
 days = tk.Entry(main, width=5, textvariable=recently_updated_days)
 days.insert(END, recently_updated_days)
 days.grid(row=22, column=1, pady=0, sticky=W, columnspan=3, padx=24)
+
+process_dependencies = IntVar(value=including_dependencies_flag)
+Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=22, column=1, sticky=W, padx=55, columnspan=3, pady=0)
+process_dependencies.trace('w', change_dependencies)
 
 tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=23, column=0, pady=8, columnspan=4, rowspan=2)
 
