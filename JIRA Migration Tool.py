@@ -618,26 +618,50 @@ def get_total_teams():
 
 
 def get_all_shared_teams():
-    global teams, verbose_logging, auth, headers, migrate_teams_check
-    print("[START] Reading ALL available shared teams.")
-    i = 1
-    while True:
-        url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '?size=100&page=' + str(i)
-        r = requests.get(url=url_retrieve, auth=auth, headers=headers)
-        teams_string = r.content.decode('utf-8')
-        if len(teams_string) < 5:
-            break
+    global teams, verbose_logging, auth, headers, migrate_teams_check, threads, max_retries
+    
+    def retrieve_teams(i):
+        global teams, auth, headers, migrate_teams_check
+        
         try:
-            teams_lst = json.loads(teams_string)
+            url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '?size=100&page=' + str(i)
+            r = requests.get(url=url_retrieve, auth=auth, headers=headers)
+            teams_string = r.content.decode('utf-8')
+            try:
+                teams_lst = json.loads(teams_string)
+            except:
+                print("[ERROR] Portfolio Add on not available for Target JIRA project. Teams will not be migrated.")
+                migrate_teams_check = 0
+                return (0, i)
+            for team in teams_lst:
+                teams[team['title']] = team['id']
+            if verbose_logging == 1:
+                print('[INFO] Teams retrieved from JIRA so far: ', len(teams))
+            return (0, i)
         except:
-            print("[ERROR] Portfolio Add on not available for Target JIRA project. Teams will not be migrated.")
-            migrate_teams_check = 0
-            return
-        for team in teams_lst:
-            teams[team['title']] = team['id']
-        if verbose_logging == 1:
-            print('[INFO] Teams retrieved from JIRA so far: ', len(teams))
-        i += 1
+            return (1, i)
+    
+    def threads_processing(function, items):
+        global threads, max_retries
+
+        items_for_retry = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = {executor.submit(function, i) for i in items}
+        for future in futures:
+            if future.result()[0] == 1:
+                items_for_retry.append(future.result()[1])
+        if len(items_for_retry) > 0:
+            if max_retries > 0:
+                max_retries -= 1
+                threads_processing(function, items_for_retry)
+            else:
+                print("The following items can't be processed: '{}'".format(items_for_retry))
+                return
+
+    print("[START] Reading ALL available shared teams.")
+    pages = [i for i in range(1, get_total_teams() // 100 + 2)]
+    max_retries = default_max_retries
+    threads_processing(retrieve_teams, pages)
     print("[END] All teams has been loaded for further items processing.")
 
 
@@ -2063,7 +2087,7 @@ def main_program():
             start_jira_key = max_processing_key
         recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
     if including_dependencies_flag == 1:
-        dependencies_jql = "project = '{}' {}".format(project_old, recently_updated)
+        dependencies_jql = "project = '{}' AND key >= {} AND key <= {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
         jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
                            "issueFunction in subtasksOf(\"{}\") OR " \
                            "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
