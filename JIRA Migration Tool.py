@@ -608,6 +608,15 @@ def clean_temp_folder(folder):
     shutil.rmtree(folder)
 
 
+def get_total_teams():
+    global auth, headers
+    url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '/count'
+    r = requests.get(url=url_retrieve, auth=auth, headers=headers)
+    teams_string = r.content.decode('utf-8')
+    teams_lst = json.loads(teams_string)
+    return teams_lst
+
+
 def get_all_shared_teams():
     global teams, verbose_logging, auth, headers, migrate_teams_check
     print("[START] Reading ALL available shared teams.")
@@ -698,7 +707,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                     new_sprints[new_sprint.name] = {"id": new_sprint.id, "state": new_sprint.state}
                 except:
                     print("[WARNING] Sprint '{}' can't be migrated. It has been deleted or access to board is restricted. Skipped...".format(o_sprint_name))
-        print("[END] Sprints have been created with '{}' states.".format(param))
+        print("[END] Sprints have been created with '{}' states.".format(param), '', sep='\n')
     else:
         print("[START] Sprint statuses to be updated to '{}'.".format(param))
         for o_sprint_name, o_sprint_details in old_sprints.items():
@@ -976,7 +985,8 @@ def migrate_status(new_issue, old_issue):
                 try:
                     jira_new.transition_issue(new_issue, transition=s)
                 except Exception as e:
-                    print("[ERROR] Status can't be changed due to '{}'".format(e))
+                    print("[ERROR] Status can't be changed due to '{}'".format(e.text))
+                    return
 
 
 def migrate_issues(issuetype):
@@ -1338,12 +1348,12 @@ def delete_extra_issues(max_id):
     total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=0, json_result=True)['total']
     
     # Calculating total Number of Migrated Issues to NEW JIRA Project
-    jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new), recently_updated)
+    jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
     total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=0, json_result=True)['total']
     
     print("[INFO] Total issues in Source Project: '{}' and total migrated issues: '{}'.".format(total_old, total_new))
     
-    jql_total_new_for_deletion = "project = '{}' AND summary ~ 'Dummy issue - for migration' AND key >= {} AND key <= {} {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new), recently_updated)
+    jql_total_new_for_deletion = "project = '{}' AND summary ~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
     total_new_for_deletion = jira_new.search_issues(jql_total_new_for_deletion, startAt=0, maxResults=0, json_result=True)['total']
     
     if delete_dummy_flag == 0:
@@ -1874,7 +1884,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
-        print("[INFO] The details for update: '{}'".format(data_val))
+        # print("[INFO] The details for update: '{}'".format(data_val))
     
     try:
         new_issue.update(notify=False, fields=data_val)
@@ -2052,13 +2062,13 @@ def main_program():
         if start_jira_key > max_processing_key:
             start_jira_key = max_processing_key
         recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
-        if including_dependencies_flag == 1:
-            dependencies_jql = "project = '{}' {}".format(project_old, recently_updated)
-            jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
-                               "issueFunction in subtasksOf(\"{}\") OR " \
-                               "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
-            recently_updated = recently_updated + " AND ({}) ".format(jql_dependencies)
-    print("[INFO] The first processing issue would be '{}'.".format(start_jira_key))
+    if including_dependencies_flag == 1:
+        dependencies_jql = "project = '{}' {}".format(project_old, recently_updated)
+        jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
+                           "issueFunction in subtasksOf(\"{}\") OR " \
+                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
+        recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
+    print("[INFO] The first processing (without dependencies) issue would be '{}'.".format(start_jira_key))
     
     # Check already migrated issues
     if skip_migrated_flag == 1:
@@ -2069,7 +2079,7 @@ def main_program():
     
     # Calculating Max ID for the project
     max_id = find_max_id(max_processing_key)
-    print("[INFO] The last processing issue will be '{}'.".format(max_id), '', sep='\n')
+    print("[INFO] The last processing (without dependencies) issue would be '{}'.".format(max_id), '', sep='\n')
     
     # Add last updated issues to migration / update process
     if last_updated_date not in ['YYYY-MM-DD', '']:
@@ -2137,6 +2147,20 @@ def main_program():
             number_of_migrated += len(v)
         print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
         print('[INFO] The list of migrated issues by type:', items_lst)
+
+    if last_updated_days_check == 1 or including_dependencies_flag == 1:
+        min_issue, max_issue, number_of_migrated = ('', '', 0)
+        for v in items_lst.values():
+            if min_issue == '' or min(v) < min_issue:
+                min_issue = min(v)
+            if max_issue == '' or max(v) > max_issue:
+                max_issue = max(v)
+            number_of_migrated += len(v)
+        print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
+        print("[INFO] The first issue to be migrated: {}".format(min_issue))
+        print("[INFO] The last issue to be migrated: {}".format(max_issue))
+        start_jira_key = min_issue
+        max_id = max_issue
     
     # -----Metadata Migration-------
     # Main Migration block
@@ -2161,7 +2185,7 @@ def main_program():
         total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=0, json_result=True)['total']
         
         # Calculating total Number of Migrated Issues to NEW JIRA Project
-        jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' {}".format(project_new, recently_updated)
+        jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' ".format(project_new)
         total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=0, json_result=True)['total']
         
         if total_old == total_new:
@@ -2598,8 +2622,8 @@ def change_migrated(*args):
 def change_process_last_updated(*args):
     global last_updated_days_check, including_dependencies_flag
     last_updated_days_check = process_last_updated.get()
-    if last_updated_days_check == 0:
-        including_dependencies_flag = 0
+    if last_updated_days_check == 1:
+        including_dependencies_flag = 1
         process_dependencies.set(including_dependencies_flag)
 
 
