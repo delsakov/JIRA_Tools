@@ -19,7 +19,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.4'
+current_version = '0.5'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -95,6 +95,7 @@ auth = (username, password)
 items_lst = {}
 sub_tasks = {}
 teams = {}
+already_migrated_set = set()
 last_updated_date = 'YYYY-MM-DD'
 updated_issues_num = 0
 threads = 1
@@ -133,6 +134,7 @@ new_transitions = {}
 
 # Functions list
 def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
+    """Function for reading Mapping Excel file and saves all mappings for further processing."""
     global issuetypes_mappings, fields_mappings, status_mappings, field_value_mappings, verbose_logging
     global JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new
     print("[START] Mapping file is opened for processing.")
@@ -149,7 +151,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
     mapping_type = 1
     
     try:
-        df = load_workbook(file_path, data_only=True)
+        df = load_workbook(file_path, read_only=True, data_only=True, keep_vba=True, keep_links=True)
         excel_sheet_names = df.get_sheet_names()
         for excel_sheet_name in excel_sheet_names:
             value_mappings = {}
@@ -238,9 +240,9 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                             try:
                                 if mapping_type == 1:
                                     if d[1] + ' --> ' + d[2] not in value_mappings.keys():
-                                        value_mappings[d[1] + ' --> ' + d[2]] = d[0].strip().split(',')
+                                        value_mappings[d[1] + ' --> ' + d[2]] = d[0].strip().split(';')
                                     else:
-                                        value_mappings[d[1] + ' --> ' + d[2]].extend(d[0].strip().split(','))
+                                        value_mappings[d[1] + ' --> ' + d[2]].extend(d[0].strip().split(';'))
                             except:
                                 print("[ERROR] Data on the sheet '{}' is invalid, Skipping...".format(excel_sheet_name))
                                 continue
@@ -371,7 +373,7 @@ def prepare_template_data():
     issue_types_map_lst = [['Source Issue type', 'Target Issue Type']]
     for o_it in old_issuetypes:
         issue_types_map_lst.append([o_it, ''])
-        
+    
     # Fields
     fields_map_lst = [['Source Issue Type', ' Source Field Name', 'Target Field Name']]
     for issuetype, fields in issue_details_old.items():
@@ -450,11 +452,14 @@ def prepare_template_data():
 
 def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_result=limit_migration_data):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
-    global items_lst, limit_migration_data, verbose_logging, max_retries, default_max_retries
+    global items_lst, limit_migration_data, verbose_logging, max_retries, default_max_retries, already_migrated_set
+    global skip_migrated_flag
     
     def sprint_update(i):
-        global items_lst, old_sprints, issue_details_old
+        global items_lst, old_sprints, issue_details_old, skip_migrated_flag, already_migrated_set
         
+        if skip_migrated_flag == 1 and i.key in already_migrated_set:
+            return (0, i)
         try:
             sprint_field_id = issue_details_old['Story']['Sprint']['id']
             issue = auth_jira.issue(i.key)
@@ -485,8 +490,10 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
             return (1, i)
     
     def issue_list_update(i):
-        global items_lst
+        global items_lst, skip_migrated_flag, already_migrated_set
         
+        if skip_migrated_flag == 1 and i.key in already_migrated_set:
+            return (0, i)
         try:
             issue = auth_jira.issue(i.key)
             if i.fields.issuetype.name not in items_lst.keys():
@@ -544,6 +551,13 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
     if verbose_logging == 1:
         print("[END] The list of all Issues has been successfully retrieved from JIRA.", '', sep='\n')
     
+    if len(issues) == 0:
+        return None
+    
+    issues_lst = set([i.key for i in issues])
+    if skip_migrated_flag == 1:
+        issues_lst -= already_migrated_set
+    
     if types is not None or details is not None:
         max_retries = default_max_retries
         threads_processing(issue_list_update, issues)
@@ -552,10 +566,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, details=None, max_resu
         max_retries = default_max_retries
         threads_processing(sprint_update, issues)
     else:
-        if len(issues) > 0:
-            return list(set([i.key for i in issues]))
-        else:
-            return None
+        return list(issues_lst)
 
 
 def get_str_from_lst(lst, sep=',', spacing=' '):
@@ -646,6 +657,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
     
     print()
     new_board, n = (0, 0)
+    start_time = time.time()
     for board in jira_new.boards():
         if board.name == name:
             new_board = board.id
@@ -668,12 +680,15 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                 if (n % 20) == 0:
                     print("[INFO] Downloaded metadata for {} out of {} Sprints so far...".format(n, len(jira_old.sprints(board_id=board_id))))
         else:
+            print("[START] Sprints and Issues processing has been started. All relevant Sprints and Issues are retrieving from Source JIRA.")
             print("[INFO] All Sprints to be migrated from old '{}' project and will be added into new '{}' project, '{}' board.".format(proj_old, project, name))
             if limit_migration_data != 0:
                 jql_sprints = 'project = {} AND key >= {} AND key <= {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
             else:
                 jql_sprints = 'project = {} AND key >= {} {} order by key ASC'.format(proj_old, start_jira_key, recently_updated)
             get_issues_by_jql(jira_old, jql=jql_sprints, sprint=True)
+            print("[END] Sprints and Issues has been retrieved from Source JIRA.")
+            print("[INFO] Sprints / Issues has been retrieved in '{}' seconds".format(time.time() - start_time), '', sep='\n')
         
         print("[START] Missing Sprints to be created...")
         for o_sprint_name, o_sprint_details in old_sprints.items():
@@ -683,7 +698,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                     new_sprints[new_sprint.name] = {"id": new_sprint.id, "state": new_sprint.state}
                 except:
                     print("[WARNING] Sprint '{}' can't be migrated. It has been deleted or access to board is restricted. Skipped...".format(o_sprint_name))
-        print("[END] Sprints have been created with 'Future' states.", '', sep='\n')
+        print("[END] Sprints have been created with '{}' states.".format(param))
     else:
         print("[START] Sprint statuses to be updated to '{}'.".format(param))
         for o_sprint_name, o_sprint_details in old_sprints.items():
@@ -720,10 +735,10 @@ def migrate_components():
             return (0, data)
         except:
             return (1, data)
-
+    
     def threads_processing(function, items):
         global threads, max_retries
-
+        
         items_for_retry = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = {executor.submit(function, i) for i in items}
@@ -737,7 +752,7 @@ def migrate_components():
             else:
                 print("The following items can't be processed: '{}'".format(items_for_retry))
                 return
-
+    
     new_components_lst = []
     components_data = []
     for new_component in new_components:
@@ -777,10 +792,10 @@ def migrate_versions():
         except Exception as e:
             print('Exception: {}'.format(e.text))
             return (1, data)
-
+    
     def threads_processing(function, items):
         global threads, max_retries
-
+        
         items_for_retry = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = {executor.submit(function, i) for i in items}
@@ -794,7 +809,7 @@ def migrate_versions():
             else:
                 print("The following items can't be processed: '{}'".format(items_for_retry))
                 return
-
+    
     versions = []
     new_versions_lst = []
     for new_version in new_versions:
@@ -971,7 +986,7 @@ def migrate_issues(issuetype):
         global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
         global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
         global max_id
-
+        
         jql_max = 'project = {} order by key desc'.format(project_new)
         try:
             new_issue_type = ''
@@ -1004,14 +1019,7 @@ def migrate_issues(issuetype):
                 except:
                     print("[ERROR] Cannot process '{}' issue.".format(new_issue_key))
                     return (0, key)
-
-            if migrate_metadata_check == 1:
-                issue_type = old_issue.fields.issuetype.name
-                for issuetype, details in issuetypes_mappings.items():
-                    if issue_type in details['issuetypes']:
-                        new_issue_type = issuetype
-                        break
-                update_new_issue_type(old_issue, new_issue, new_issue_type)
+            
             if migrate_comments_check == 1:
                 migrate_comments(old_issue, new_issue)
             if migrate_links_check == 1:
@@ -1020,6 +1028,13 @@ def migrate_issues(issuetype):
                 migrate_attachments(old_issue, new_issue)
             if migrate_statuses_check == 1:
                 migrate_status(new_issue, old_issue)
+            if migrate_metadata_check == 1:
+                issue_type = old_issue.fields.issuetype.name
+                for issuetype, details in issuetypes_mappings.items():
+                    if issue_type in details['issuetypes']:
+                        new_issue_type = issuetype
+                        break
+                update_new_issue_type(old_issue, new_issue, new_issue_type)
             if create_remote_link_for_old_issue == 1:
                 remote_link_exist = 0
                 try:
@@ -1033,10 +1048,10 @@ def migrate_issues(issuetype):
             return (0, key)
         except:
             return (1, key)
-
+    
     def threads_processing(function, items):
         global threads, max_retries
-
+        
         items_for_retry = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = {executor.submit(function, i) for i in items}
@@ -1050,7 +1065,7 @@ def migrate_issues(issuetype):
             else:
                 print("The following items can't be processed: '{}'".format(items_for_retry))
                 return
-
+    
     for type in issuetypes_mappings[issuetype]['issuetypes']:
         if type in items_lst.keys():
             print()
@@ -1287,7 +1302,7 @@ def delete_extra_issues(max_id):
             return (0, key)
         except:
             return (1, key)
-
+    
     def threads_processing(function, items):
         global threads, max_retries
         
@@ -1350,13 +1365,13 @@ def delete_extra_issues(max_id):
 def create_dummy_issue(jira, project, issuetype, fields, old_issue):
     """Creating Dummy Issue with all defaulted mandatory fields + specific Summary for further processing."""
     global issue_details_new
-
+    
     new_data = {}
     new_data['project'] = project
     new_data['issuetype'] = eval('{"name": "' + issuetype + '"}')
     new_data['summary'] = "Dummy issue - for migration"
     new_data['labels'] = ['DUMMY_ISSUE_FOR_MIGRATION']
-
+    
     for field in fields:
         for f in issue_details_new[issuetype]:
             if issue_details_new[issuetype][f]['id'] == field:
@@ -1526,13 +1541,14 @@ def save_config(message=True):
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
+    global jira_new
     old_issuetype = old_issue.fields.issuetype.name
     
     def get_new_value_from_mapping(old_value, field_name):
         global field_value_mappings
         try:
             for new_value, old_values in field_value_mappings[field_name].items():
-                if str(old_value) in old_values:
+                if str(old_value.strip()) in old_values:
                     return new_value
         except:
             return old_value
@@ -1561,7 +1577,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     new_issue_sprints = None
             return new_issue_sprints
         try:
-            value = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field.strip()]['id'])
+            value = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field]['id'])
+            if value is []:
+                return value
         except:
             return None
         if type(value) == list:
@@ -1608,7 +1626,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             old_value = None
             
             try:
-                value = eval('old_issue.fields.' + issue_details_old[old_issuetype][field.strip()]['id'])
+                value = eval('old_issue.fields.' + issue_details_old[old_issuetype][field]['id'])
             except:
                 try:
                     value = eval('old_issue.fields.' + field.strip())
@@ -1624,6 +1642,28 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value = int(float(str(value).replace('\n', '').replace('\t', ' ')))
                 except:
                     pass
+            elif issue_details_old[old_issuetype][field]['type'] == 'option-with-child' and value is not None:
+                value_value = value.value
+                value_child = value.child.value
+                mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
+                if mapped_value is not None:
+                    mapped_value_value = value.split(' --> ')[0]
+                    mapped_value_child = value.split(' --> ')[1]
+                else:
+                    mapped_value_value = value_value
+                    mapped_value_child = value_child
+                if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
+                    if issue_details_new[new_issuetype][new_field]['validated'] is True:
+                        for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                            if mapped_value_value == values[0] and mapped_value_child == values[1]:
+                                old_value = {"value": mapped_value_value, "child": {"value": mapped_value_child}}
+                                return old_value
+                            else:
+                                old_value = None
+                    else:
+                        old_value = {"value": value_value, "child": {"value": value_child}}
+                else:
+                    old_value = value_value + ' --> ' + value_child
             
             if issue_details_old[old_issuetype][field]['type'] in ['string', 'number', 'array'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
                 old_value = value
@@ -1637,6 +1677,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         pass
                 elif issue_details_old[old_issuetype][field]['custom type'] in ['multiversion', 'multiuserpicker'] and old_value is not None:
                     old_value = [item.name for item in old_value]
+                elif issue_details_old[old_issuetype][field]['custom type'] in ['multicheckboxes'] and old_value is not None:
+                    old_value = [item.value for item in old_value]
             elif issue_details_old[old_issuetype][field]['type'] in ['option', 'user']:
                 try:
                     old_value = value.value
@@ -1645,29 +1687,6 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         old_value = value.name
                     except:
                         old_value = value
-            elif issue_details_old[old_issuetype][field]['type'] == 'option-with-child':
-                if value is not None:
-                    value_value = value.value
-                    value_child = value.child.value
-                    mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
-                    if mapped_value is not None:
-                        mapped_value_value = value.split(' --> ')[0]
-                        mapped_value_child = value.split(' --> ')[1]
-                    else:
-                        mapped_value_value = value_value
-                        mapped_value_child = value_child
-                    if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
-                        if issue_details_new[new_issuetype][new_field]['validated'] is True:
-                            for values in issue_details_new[new_issuetype][new_field]['allowed values']:
-                                if mapped_value_value == values[0] and mapped_value_child == values[1]:
-                                    old_value = {"value": mapped_value_value, "child": {"value": mapped_value_child}}
-                                    return old_value
-                                else:
-                                    old_value = None
-                        else:
-                            old_value = {"value": value_value, "child": {"value": value_child}}
-                    else:
-                        old_value = value_value + ' --> ' + value_child
             elif issue_details_new[new_issuetype][new_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
                 if issuetype in sub_tasks.keys():
                     return None
@@ -1695,12 +1714,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                             concatenated_value = ''
                         else:
                             try:
-                                concatenated_value = data_val['description']
+                                concatenated_value = data_val['description'] + '\r\n----\r\n'
                             except:
-                                concatenated_value = ''
+                                concatenated_value = '----\r\n'
                     added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
                     if new_field == 'Description':
-                        concatenated_value += '' if added_value == '' else ' \\\\ \\\\ *[' + o_field + ']:* ' + added_value
+                        concatenated_value += '' if added_value == '' else '\r\n *[' + o_field + ']:* ' + added_value
                     else:
                         concatenated_value += '' if get_str_from_lst(added_value) == '' else '[' + o_field + ']: ' + get_str_from_lst(added_value) + ' '
                 elif issue_details_new[new_issuetype][new_field]['type'] == 'number':
@@ -1806,22 +1825,46 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     data_value = None if n_field_value == '' else [i for i in n_field_value]
                 else:
                     data_value = None if n_field_value == '' else [n_field_value]
+            elif issue_details_new[issuetype][n_field]['custom type'] == 'multiselect':
+                if issue_details_new[new_issuetype][n_field]['validated'] is True and n_field_value is not None:
+                    data_value = []
+                    for val in n_field_value:
+                        for values in issue_details_new[new_issuetype][n_field]['allowed values']:
+                            if val == values:
+                                data_value.append({"name": val})
+                                continue
+                else:
+                    data_value = [{"name": get_str_from_lst(n_field_value)}]
             else:
                 data_value = None if n_field_value == '' else {"name":  n_field_value}
         elif issue_details_new[issuetype][n_field]['type'] in ['option'] and issue_details_new[issuetype][n_field]['validated'] is True:
             data_value = None if n_field_value == '' else {"value":  n_field_value}
         elif issue_details_new[issuetype][n_field]['type'] == 'option-with-child':
-            if n_field_value != '':
+            if n_field_value == '':
+                data_value = '[!DROP]'
+            elif type(n_field_value) == str:
                 try:
-                    data_value = {"value": n_field_value.value, "child": {"value": n_field_value.child.value}}
+                    value_value = n_field_value.split(' --> ')[0]
+                    value_child = n_field_value.split(' --> ')[1]
+                    if issue_details_new[new_issuetype][n_field]['validated'] is True:
+                        for values in issue_details_new[new_issuetype][n_field]['allowed values']:
+                            if value_value == values[0] and value_child == values[1]:
+                                data_value = {"value": value_value, "child": {"value": value_child}}
+                                continue
                 except:
                     data_value = None
             else:
-                data_value = 'DROP'
+                data_value = n_field_value
         else:
             data_value = n_field_value
         
-        if data_value != 'DROP':
+        # Cheking the field MAX lenght and trimming all the extra info
+        if issue_details_new[issuetype][n_field]['custom type'] == 'textfield' and len(data_value) > 255:
+            print("[WARNING] The value in '{}' field would be trimmed. It exceeds the allowed limit of 255 characters.".format(n_field))
+            print("[INFO] Removed part: '{}'".format(data_value[254:]))
+            data_value = data_value[:254]
+        
+        if data_value != '[!DROP]':
             data_val[issue_details_new[issuetype][n_field]['id']] = data_value
     
     # Fix for Team management JIRA Portfolio Team field - JPOSERVER-2322
@@ -1831,7 +1874,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
-        # print("[INFO] The details for update: '{}'".format(data_val))
+        print("[INFO] The details for update: '{}'".format(data_val))
     
     try:
         new_issue.update(notify=False, fields=data_val)
@@ -1847,13 +1890,22 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if 'reporter' in data_val.keys() and data_val['reporter'] is not None and data_val['reporter']['name'] == user_name:
                     data_val.pop('reporter', None)
                 new_issue.update(notify=False, fields=data_val)
+            elif 'The reporter specified is not a user' in e.text:
+                data_val.pop('reporter', None)
+                new_issue.update(notify=False, fields=data_val)
+            elif "does not exist for the field 'project'." in e.text:
+                try:
+                    new_issue = jira_new.issue(new_issue.key)
+                    new_issue.update(notify=False, fields=data_val)
+                except Exception as er:
+                    print("[ERROR] Session was killed by JIRA. Exception: '{}'".format(er.text))
             else:
                 print("[ERROR] for '{}' is '{}'".format(new_issue.key, e))
                 print("[INFO] The details for update: '{}'".format(data_val))
         except:
             print("[ERROR] for '{}' is '{}'".format(new_issue.key, e))
             print("[INFO] The details for update: '{}'".format(data_val))
-    
+
 
 def generate_template():
     """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
@@ -1912,8 +1964,8 @@ def main_program():
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
-    global recently_updated_days, recently_updated, max_id, including_dependencies_flag
-
+    global recently_updated_days, recently_updated, max_id, including_dependencies_flag, already_migrated_set
+    
     def find_max_id(key):
         global jira_old
         
@@ -1923,21 +1975,21 @@ def main_program():
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
             find_max_id(key)
-
-
+    
+    
     start_time = time.time()
-
+    
     username = user.get()
     password = passwd.get()
     mapping_file = file.get().split('.xls')[0] + '.xlsx'
-
+    
     recently_updated_days = days.get()
     try:
         recently_updated_days = str(int(recently_updated_days))
     except:
         print("[ERROR] The number of Days for Last Updated period should be a Number. Default value '365' will be used.")
         recently_updated_days = '365'
-        
+    
     # Checking the all mandatory fields are populated on Config page
     if validation_error == 1:
         change_configs()
@@ -1946,12 +1998,12 @@ def main_program():
     if os.path.exists(mapping_file) is False or mapping_file == '.xlsx':
         load_file()
     main.destroy()
-
+    
     if os.path.exists(mapping_file) is False or mapping_file == '.xlsx':
         print("[ERROR] Mapping File not found. Migration failed.")
         os.system("pause")
         exit()
-
+    
     # Checking the JIRA credentials
     if len(username) < 6 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
@@ -2006,21 +2058,14 @@ def main_program():
                                "issueFunction in subtasksOf(\"{}\") OR " \
                                "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
             recently_updated = recently_updated + " AND ({}) ".format(jql_dependencies)
-            # get_issues_by_jql(jira_old, jql=jql_dependencies, details=True)
-
+    print("[INFO] The first processing issue would be '{}'.".format(start_jira_key))
+    
     # Check already migrated issues
     if skip_migrated_flag == 1:
-        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' {} order by key desc".format(project_new, recently_updated)
-        issues = get_issues_by_jql(jira_new, jql_last_migrated, max_result=1)
-        last_migrated_id = issues[0] if issues is not None else None
-        if last_migrated_id is None:
-            last_migrated_id = project_new + '-1'
-        new_start_jira_key = project_old + '-' + str(last_migrated_id.split('-')[1])
-        if start_jira_key < new_start_jira_key:
-            start_jira_key = new_start_jira_key
-        if start_jira_key > max_processing_key:
-            start_jira_key = max_processing_key
-    print("[INFO] The first processing issue would be '{}'.".format(start_jira_key))
+        print("[START] Checking for already migrated issues. They will be skipped.")
+        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration'".format(project_new)
+        already_migrated_set = set([key.replace(project_new, project_old) for key in get_issues_by_jql(jira_new, jql_last_migrated, max_result=0)])
+        print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)), '', sep='\n')
     
     # Calculating Max ID for the project
     max_id = find_max_id(max_processing_key)
@@ -2039,7 +2084,7 @@ def main_program():
                     items_lst[issue.fields.issuetype.name].add(issue.key)
         except:
             print("[ERROR] The value for Last Updated '{}' not in correct 'YYYY-MM-DD' format.".format(last_updated_date))
-
+    
     # Components Migration
     if migrate_components_check == 1:
         start_components_time = time.time()
@@ -2050,8 +2095,8 @@ def main_program():
     if migrate_fixversions_check == 1:
         start_versions_time = time.time()
         migrate_versions()
-        print("[INFO] fixVersions migrated in '{}' seconds.".format(time.time() - start_versions_time), '', sep='\n')
-
+        print("[INFO] FixVersions migrated in '{}' seconds.".format(time.time() - start_versions_time), '', sep='\n')
+    
     # Teams Migration (skipping if no mapping to Portfolio Teams)
     if migrate_teams_check == 1:
         start_teams_time = time.time()
@@ -2101,20 +2146,20 @@ def main_program():
             if v['hierarchy'] == str(i):
                 migrate_issues(issuetype=k)
     print("[INFO] Issues have been migrated in '{}' seconds.".format(time.time() - start_processing_time), '', sep='\n')
-
+    
     # Cleaning Folder for Attachments migration
     if migrate_attachments_check == 1:
         clean_temp_folder(temp_dir_name)
-        
+    
     # Update and Close Sprints - after migration of issues are done
     if migrate_sprints_check == 1:
         start_update_sprints = time.time()
         migrate_sprints(proj_old=project_old, param='ACTIVE')
-
+        
         # Calculating total Number of Issues in OLD JIRA Project
         jql_total_old = "project = '{}' {}".format(project_old, recently_updated)
         total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=0, json_result=True)['total']
-    
+        
         # Calculating total Number of Migrated Issues to NEW JIRA Project
         jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' {}".format(project_new, recently_updated)
         total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=0, json_result=True)['total']
@@ -2125,7 +2170,7 @@ def main_program():
             print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, int(total_old) - int(total_new)))
             print()
         print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints), '', sep='\n')
-
+    
     # Delete issues with Summary = 'Dummy Issue'
     start_delete_time = time.time()
     delete_extra_issues(max_id)
@@ -2244,7 +2289,7 @@ def change_configs():
         if project_new == '':
             print("[ERROR] Target JIRA Project Key is empty.")
             validation_error = 1
-
+        
         if start_jira_key == '':
             start_jira_key = 1
         try:
@@ -2333,28 +2378,28 @@ def change_configs():
     
     config_popup = tk.Tk()
     config_popup.title("JIRA Migration Tool - Configuration")
-
+    
     JIRA_BASE_URL_OLD = check_similar("JIRA_BASE_URL_OLD", JIRA_BASE_URL_OLD)
     
     tk.Label(config_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=0, rowspan=1)
     source_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_OLD)
     source_jira.insert(END, JIRA_BASE_URL_OLD)
     source_jira.grid(row=0, column=1, columnspan=2, padx=8)
-
+    
     project_old = check_similar("project_old", project_old)
     
     tk.Label(config_popup, text="Source Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=3, rowspan=1)
     source_project = tk.Entry(config_popup, width=16, textvariable=project_old)
     source_project.insert(END, project_old)
     source_project.grid(row=0, column=3, columnspan=2, padx=7, stick=E)
-
+    
     JIRA_BASE_URL_NEW = check_similar("JIRA_BASE_URL_NEW", JIRA_BASE_URL_NEW)
-
+    
     tk.Label(config_popup, text="Target JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=1, column=0, rowspan=1)
     target_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_NEW)
     target_jira.insert(END, JIRA_BASE_URL_NEW)
     target_jira.grid(row=1, column=1, columnspan=2, padx=8)
-
+    
     project_new = check_similar("project_new", project_new)
     
     tk.Label(config_popup, text="Target Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=3, rowspan=1)
@@ -2365,7 +2410,7 @@ def change_configs():
     tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=2, columnspan=5)
     
     tk.Label(config_popup, text="Detailed Configuration for migration. Defaults are '0' or empty for ALL Sprints / Issues:", foreground="black", font=("Helvetica", 11, "italic"), padx=10, wraplength=500).grid(row=3, column=0, columnspan=5)
-
+    
     start_jira_key = check_similar("start_jira_key", start_jira_key)
     
     tk.Label(config_popup, text="Start migration from (Issue Key or Number):", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=300).grid(row=4, column=0, columnspan=2)
@@ -2382,14 +2427,14 @@ def change_configs():
     migrated_number.delete(0, END)
     migrated_number.insert(0, limit_migration_data)
     migrated_number.grid(row=4, column=4, columnspan=1, padx=8)
-
+    
     default_board_name = check_similar("default_board_name", default_board_name)
     
     tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=5, column=0, columnspan=2)
     new_board = tk.Entry(config_popup, width=20, textvariable=default_board_name)
     new_board.insert(END, default_board_name)
     new_board.grid(row=5, column=2, columnspan=1, padx=8)
-
+    
     if old_board_id == 0:
         old_board_id = ''
     old_board_id = check_similar("old_board_id", old_board_id)
@@ -2404,7 +2449,7 @@ def change_configs():
     new_teams = tk.Entry(config_popup, width=20, textvariable=team_project_prefix)
     new_teams.insert(END, team_project_prefix)
     new_teams.grid(row=6, column=2, columnspan=1, padx=8)
-
+    
     threads = check_similar("threads", threads)
     
     tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
@@ -2415,7 +2460,7 @@ def change_configs():
     
     if last_updated_date == '':
         last_updated_date = 'YYYY-MM-DD'
-
+    
     last_updated_date = check_similar("last_updated_date", last_updated_date)
     
     tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=7, column=0, columnspan=4)
