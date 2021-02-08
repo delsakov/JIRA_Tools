@@ -19,7 +19,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.6'
+current_version = '0.7'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -512,7 +512,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
             return (1, param)
     
     def migrated_update(param):
-        global skip_migrated_flag, already_migrated_set
+        global skip_migrated_flag, already_migrated_set, project_old, project_new
 
         jira, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
@@ -521,7 +521,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
             return (0, param)
         try:
             for issue in issues:
-                already_migrated_set.add(issue.key)
+                already_migrated_set.add(issue.key.replace(project_new, project_old))
             return (0, param)
         except:
             return (1, param)
@@ -557,9 +557,6 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
                 print("The following items can't be processed: '{}'".format(items_for_retry))
                 return
     
-    if verbose_logging == 1:
-        print("[START] The list of all Issues are retrieving from JIRA.")
-        
     start_idx, block_num, block_size = (0, 0, 100)
     if max_result != 0 and block_size > max_result:
         block_size = max_result
@@ -577,12 +574,10 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     if types is not None and sprint is None:
         max_retries = default_max_retries
         threads_processing(issue_list_update, params)
-        print("[END] The list of all Issues has been successfully retrieved from JIRA.", '', sep='\n')
     elif sprint is not None:
         print("[INFO] Sprint retrieval from project was started. It could take some time... Please wait...")
         max_retries = default_max_retries
         threads_processing(sprint_update, params)
-        print("[END] The list of all Issues has been successfully retrieved from JIRA.", '', sep='\n')
     elif migrated is not None:
         max_retries = default_max_retries
         threads_processing(migrated_update, params)
@@ -590,7 +585,6 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
         issues_lst = set()
         max_retries = default_max_retries
         threads_processing(issue_list_upload, params)
-        print("[END] The list of all Issues has been successfully retrieved from JIRA.", '', sep='\n')
         return list(issues_lst)
 
 
@@ -710,22 +704,73 @@ def get_team_id(team_name):
 
 
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
-    global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth
-    global max_id, start_jira_key, headers, recently_updated
+    global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth, max_retries
+    global max_id, start_jira_key, headers, recently_updated, JIRA_BASE_URL_NEW, JIRA_sprint_api, default_max_retries
+
+    def create_sprint(data):
+        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints
+
+        url = JIRA_BASE_URL_NEW + JIRA_sprint_api
+        try:
+            if data["startDate"] == '':
+                data.pop("startDate", None)
+            if data["endDate"] == '':
+                data.pop("endDate", None)
+            r = requests.post(url, json=data, auth=auth, headers=headers)
+            new_sprint_details = r.content.decode('utf-8')
+            new_sprint = json.loads(new_sprint_details)
+            new_sprints[new_sprint['name']] = {"id": new_sprint['id'], "state": new_sprint['state']}
+            return (0, data)
+        except Exception as e:
+            print('Exception: {}'.format(e))
+            return (1, data)
     
-    print()
-    new_board, n = (0, 0)
+    def update_sprint(data):
+        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints
+        
+        sprint_id, body = data
+        url = JIRA_BASE_URL_NEW + JIRA_sprint_api + str(sprint_id)
+        try:
+            r = requests.post(url, json=data, auth=auth, headers=headers)
+            new_sprint_details = r.content.decode('utf-8')
+            new_sprint = json.loads(new_sprint_details)
+            new_sprints[new_sprint['name']] = {"state": new_sprint['state']}
+            return (0, data)
+        except Exception as e:
+            print('Exception: {}'.format(e))
+            return (1, data)
+            
+    def threads_processing(function, items):
+        global threads, max_retries
+        
+        items_for_retry = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+            futures = {executor.submit(function, i) for i in items}
+        for future in futures:
+            if future.result()[0] == 1:
+                items_for_retry.append(future.result()[1])
+        if len(items_for_retry) > 0:
+            if max_retries > 0:
+                max_retries -= 1
+                threads_processing(function, items_for_retry)
+            else:
+                print("The following items can't be processed: '{}'".format(items_for_retry))
+                return
+
     start_time = time.time()
-    for board in jira_new.boards():
-        if board.name == name and project in board.filter.query:
-            new_board = board.id
-    if new_board == 0:
-        new_board = jira_new.create_board(name, project, location_type='project')
-    
-    if len(jira_new.sprints(board_id=new_board)) > 0:
-        for n_sprint in jira_new.sprints(board_id=new_board):
-            new_sprints[n_sprint.name] = {"id": n_sprint.id, "state": n_sprint.state}
     if param == 'FUTURE':
+        new_board, n = (0, 0)
+        for board in jira_new.boards():
+            if board.name == name and project in board.filter.query:
+                new_board = board.id
+                break
+        if new_board == 0:
+            board = jira_new.create_board(name, project, location_type='project')
+            new_board = board.id
+    
+        if len(jira_new.sprints(board_id=new_board)) > 0:
+            for n_sprint in jira_new.sprints(board_id=new_board):
+                new_sprints[n_sprint.name] = {"id": n_sprint.id, "state": n_sprint.state}
         if proj_old is None:
             print("[INFO] Sprints to be migrated from board '{}'.".format(board_id))
             for sprint in jira_old.sprints(board_id=board_id):
@@ -748,30 +793,29 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
             get_issues_by_jql(jira_old, jql=jql_sprints, sprint=True)
             print("[END] Sprints and Issues has been retrieved from Source JIRA.")
             print("[INFO] Sprints / Issues has been retrieved in '{}' seconds".format(time.time() - start_time), '', sep='\n')
-        
+
+        sprint_start_time = time.time()
         print("[START] Missing Sprints to be created...")
+        sprint_details = []
         for o_sprint_name, o_sprint_details in old_sprints.items():
             if o_sprint_name not in new_sprints.keys():
-                try:
-                    new_sprint = jira_new.create_sprint(name=o_sprint_name, board_id=new_board, startDate=old_sprints[o_sprint_name]['startDate'], endDate=old_sprints[o_sprint_name]['endDate'])
-                    new_sprints[new_sprint.name] = {"id": new_sprint.id, "state": new_sprint.state}
-                except:
-                    print("[WARNING] Sprint '{}' can't be migrated. It has been deleted or access to board is restricted. Skipped...".format(o_sprint_name))
-        print("[END] Sprints have been created with '{}' states.".format(param), '', sep='\n')
+                sprint_details.append({"originBoardId": new_board, "name": o_sprint_name, "startDate": old_sprints[o_sprint_name]['startDate'], "endDate": old_sprints[o_sprint_name]['endDate']})
+        max_retries = default_max_retries
+        threads_processing(create_sprint, sprint_details)
+        print("[END] Sprints have been created with '{}' states.".format(param))
+        print("[INFO] Sprints have been created in '{}' seconds".format(time.time() - sprint_start_time), '', sep='\n')
     else:
         print("[START] Sprint statuses to be updated to '{}'.".format(param))
+        sprint_details = []
         for o_sprint_name, o_sprint_details in old_sprints.items():
             if o_sprint_name in new_sprints.keys():
-                url = JIRA_BASE_URL_NEW + JIRA_sprint_api + str(new_sprints[o_sprint_name]["id"])
-                if param == 'ACTIVE' and old_sprints[o_sprint_name]['endDate'] != new_sprints[o_sprint_name]["state"] and old_sprints[o_sprint_name]['endDate'] != 'FUTURE':
-                    # Mark Sprint as Active
-                    if jira_new.sprint(new_sprints[o_sprint_name]["id"]).state == 'FUTURE':
-                        body = {"state": "ACTIVE"}
-                        r = requests.post(url, json=body, auth=auth, headers=headers)
-                    if param == 'CLOSED' and jira_new.sprint(new_sprints[o_sprint_name]["id"]).state == 'ACTIVE' and old_sprints[o_sprint_name]['endDate'] == 'CLOSED':
-                        # Mark Sprint as Closed - should be Active beforehand
-                        body = {"state": "CLOSED"}
-                        r = requests.post(url, json=body, auth=auth, headers=headers)
+                if param == 'ACTIVE' and new_sprints[o_sprint_name]["state"] == 'FUTURE' and old_sprints[o_sprint_name]['state'] != 'FUTURE':
+                    body = {"state": "ACTIVE"}
+                if param == 'CLOSED' and new_sprints[o_sprint_name]["state"] == 'ACTIVE' and old_sprints[o_sprint_name]['state'] == 'CLOSED':
+                    body = {"state": "CLOSED"}
+                sprint_details.append((new_sprints[o_sprint_name]["id"], body))
+        max_retries = default_max_retries
+        threads_processing(update_sprint, sprint_details)
         print("[END] Sprint statuses have been updated to '{}'.".format(param))
 
 
@@ -1625,7 +1669,7 @@ def save_config(message=True):
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
-    global jira_new
+    global jira_new, items_lst
     old_issuetype = old_issue.fields.issuetype.name
     
     def get_new_value_from_mapping(old_value, field_name):
@@ -1922,6 +1966,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             else:
                 data_value = None if n_field_value == '' else {"name":  n_field_value}
         elif issue_details_new[issuetype][n_field]['type'] in ['option'] and issue_details_new[issuetype][n_field]['validated'] is True:
+            for value in issue_details_new[new_issuetype][n_field]['allowed values']:
+                if n_field_value == value:
+                    data_value = {"value":  n_field_value}
+                    continue
+                else:
+                    data_value = None
             data_value = None if n_field_value == '' else {"value":  n_field_value}
         elif issue_details_new[issuetype][n_field]['type'] == 'option-with-child':
             if n_field_value == '':
@@ -1959,10 +2009,24 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     # Post-processing fix for Components
     if data_val['components'] is None:
         data_val['components'] = []
+        
+    # Post-processing fix for Parent Links (which is not part of migration)
+    if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys():
+        parent_found = 0
+        for k, v in items_lst.items():
+            if data_val[issue_details_new[issuetype]['Parent Link']['id']] in v:
+                parent_found = 1
+                continue
+        if parent_found == 0:
+            data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+    
+    # Post-processing for Description (if empty and no mappings from other fields)
+    if 'description' in data_val.keys() and data_val['description'] == '\r\n----\r\n':
+        data_val['description'] = ' '
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
-        # print("[INFO] The details for update: '{}'".format(data_val))
+        print("[INFO] The details for update: '{}'".format(data_val))
     
     try:
         new_issue.update(notify=False, fields=data_val)
@@ -2153,7 +2217,7 @@ def main_program():
     # Check already migrated issues
     if skip_migrated_flag == 1:
         print("[START] Checking for already migrated issues. They will be skipped.")
-        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration'".format(project_new)
+        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} ".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
         get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
         print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)), '', sep='\n')
     
@@ -2218,27 +2282,29 @@ def main_program():
         else:
             jql_details = 'project = {} AND key >= {} {} order by key ASC'.format(project_old, start_jira_key, recently_updated)
         get_issues_by_jql(jira_old, jql=jql_details, types=True)
-    
-    # Extra Logging
-    if verbose_logging == 1:
-        print('[INFO] The list of migrated issues by type:', items_lst)
-    
+        
     # Calculating minumal and Maximal issues to be migrated
     min_issue, max_issue, number_of_migrated = (0, 0, 0)
-    for v in items_lst.values():
+    for k, v in items_lst.items():
         if min_issue == 0 or min([int(i.split('-')[1]) for i in v]) < min_issue:
             min_issue = min([int(i.split('-')[1]) for i in v])
         if max_issue == 0 or max([int(i.split('-')[1]) for i in v]) > max_issue:
             max_issue = max([int(i.split('-')[1]) for i in v])
+        # items_lst[k] -= already_migrated_set
         number_of_migrated += len(v)
     min_issue_key = project_old + '-' + str(min_issue)
     max_issue_key = project_old + '-' + str(max_issue)
     print("[INFO] The Number of issues to be migrated: {}".format(number_of_migrated))
-    print("[INFO] The first issue to be migrated: {}".format(min_issue_key))
-    print("[INFO] The last issue to be migrated: {}".format(max_issue_key))
-    start_jira_key = min_issue_key
-    max_id = max_issue_key
-    
+    if number_of_migrated > 0:
+        start_jira_key = min_issue_key
+        max_id = max_issue_key
+    print("[INFO] The first issue to be migrated: {}".format(start_jira_key))
+    print("[INFO] The last issue to be migrated: {}".format(max_id))
+
+    # Extra Logging
+    if verbose_logging == 1:
+        print('[INFO] The list of migrated issues by type:', items_lst)
+
     # Creating missing Dummy issues
     start_dummy_time = time.time()
     jql_max_new = 'project = {} order by key desc'.format(project_new)
@@ -2246,9 +2312,12 @@ def main_program():
     issues_for_creation = 0
     if max_new_id is not None and int(max_new_id.split('-')[1]) < int(max_id.split('-')[1]):
         issues_for_creation = int(max_id.split('-')[1]) - int(max_new_id.split('-')[1])
-    else:
+    elif max_new_id is None:
         issues_for_creation = int(max_id.split('-')[1])
-    create_dummy_issues(issues_for_creation, batch_size=100)
+    else:
+        issues_for_creation = 0
+    if number_of_migrated > 0:
+        create_dummy_issues(issues_for_creation, batch_size=100)
     print("[INFO] Dummy Issues created in '{}' seconds.".format(time.time() - start_dummy_time), '', sep='\n')
     
     # -----Metadata Migration-------
