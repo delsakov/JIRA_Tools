@@ -464,7 +464,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields=eval("'issuetype," + sprint_field_id + "'"))
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and issue.key in already_migrated_set:
+                if skip_migrated_flag == 1 and issue.key.replace(project_new, project_old) in already_migrated_set:
                     continue
                 if issue.fields.issuetype.name not in items_lst.keys():
                     items_lst[issue.fields.issuetype.name] = set()
@@ -500,7 +500,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
 
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and issue.key in already_migrated_set:
+                if skip_migrated_flag == 1 and issue.key.replace(project_new, project_old) in already_migrated_set:
                     continue
                 if issue.fields.issuetype.name not in items_lst.keys():
                     items_lst[issue.fields.issuetype.name] = set()
@@ -533,9 +533,9 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and issue.key in already_migrated_set:
+                if skip_migrated_flag == 1 and issue.key.replace(project_new, project_old) in already_migrated_set:
                     continue
-                issues_lst.append(issue.key)
+                issues_lst.add(issue.key)
             return (0, param)
         except:
             return (1, param)
@@ -2225,11 +2225,13 @@ def main_program():
     
     # Check already migrated issues
     if skip_migrated_flag == 1:
+        start_already_migrated_time = time.time()
         print("[START] Checking for already migrated issues. They will be skipped.")
         jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key < {} ".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
         get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
-        print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)), '', sep='\n')
-    
+        print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
+        print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time), '', sep='\n')
+        
     # Calculating Max ID for the project
     max_id = find_max_id(max_processing_key)
     
