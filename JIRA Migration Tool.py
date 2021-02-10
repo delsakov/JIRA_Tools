@@ -919,7 +919,7 @@ def migrate_versions():
         new_versions_lst.append(new_version.name)
     for version in old_versions:
         description, release_date, start_date, archieved, released = (None, None, None, None, None)
-        if version.name not in new_versions_lst:
+        if version.name.strip().upper() not in [version.upper() for version in new_versions_lst]:
             if hasattr(version, 'description'):
                 description = version.description
             if hasattr(version, 'releaseDate'):
@@ -930,7 +930,7 @@ def migrate_versions():
                 archieved = version.archieved
             if hasattr(version, 'released'):
                 released = version.released
-            versions.append((version.name, project_new, description, release_date, start_date, archieved, released))
+            versions.append((version.name.strip(), project_new, description, release_date, start_date, archieved, released))
     
     max_retries = default_max_retries
     threads_processing(update_version, versions)
@@ -1468,7 +1468,7 @@ def create_dummy_issues(total_number, batch_size=100):
         except Exception as e:
             print("[ERROR] Issues can't be created due to '{}'".format(e))
             return (1, data_lst)
-
+    
     def threads_processing(function, items):
         global threads, max_retries
 
