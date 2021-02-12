@@ -19,7 +19,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.7'
+current_version = '0.8'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -620,7 +620,7 @@ def create_temp_folder(folder):
         print("[INFO] Folder '{}' has been cleaned up.".format(local_folder))
     else:
         os.mkdir(local_folder)
-        print("[INFO] Folder '{}' has been created".format(local_folder))
+        print("[INFO] Folder '{}' has been created".format(local_folder), '', sep='\n')
 
 
 def clean_temp_folder(folder):
@@ -758,6 +758,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
 
     start_time = time.time()
     if param == 'FUTURE':
+        print("[START] Sprints and Issues processing has been started. All relevant Sprints and Issues are retrieving from Source JIRA.")
         new_board, n = (0, 0)
         for board in jira_new.boards():
             if board.name == name and project in board.filter.query:
@@ -783,10 +784,12 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                 if (n % 20) == 0:
                     print("[INFO] Downloaded metadata for {} out of {} Sprints so far...".format(n, len(jira_old.sprints(board_id=board_id))))
         else:
-            print("[START] Sprints and Issues processing has been started. All relevant Sprints and Issues are retrieving from Source JIRA.")
             print("[INFO] All Sprints to be migrated from old '{}' project and will be added into new '{}' project, '{}' board.".format(proj_old, project, name))
             if limit_migration_data != 0:
-                jql_sprints = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+                if start_jira_key != max_id:
+                    jql_sprints = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+                else:
+                    jql_sprints = 'project = {} AND key >= {} AND key <= {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
             else:
                 jql_sprints = 'project = {} AND key >= {} {} order by key ASC'.format(proj_old, start_jira_key, recently_updated)
             get_issues_by_jql(jira_old, jql=jql_sprints, sprint=True)
@@ -1076,9 +1079,12 @@ def migrate_status(new_issue, old_issue):
         else:
             try:
                 jira_new.transition_issue(new_issue, transition=s, fields={"resolution": {"name": resolution}})
-            except Exception as e:
-                print("[ERROR] Status can't be changed due to '{}'".format(e.text))
-                return
+            except:
+                try:
+                    jira_new.transition_issue(new_issue, transition=s)
+                except Exception as e:
+                    print("[ERROR] Status can't be changed due to '{}'".format(e.text))
+                    return
 
 
 def migrate_issues(issuetype):
@@ -1683,10 +1689,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             return old_value
     
     def get_old_system_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype):
-        global issue_details_old, new_sprints
+        global issue_details_old, new_sprints, issuetypes_mappings
         
         if new_field == 'Sprint':
-            if issuetype in sub_tasks.keys():
+            if issuetype in sub_tasks.keys() or issuetypes_mappings[issuetype]['hierarchy'] in ['0', '1']:
                 return None
             else:
                 sprint_field = get_old_field('Sprint')
@@ -1700,8 +1706,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                 name = attr.split('name=')[1]
                             if name in new_sprints.keys():
                                 new_issue_sprints.append(new_sprints[name]['id'])
+                                break
                     if len(new_issue_sprints) == 0:
                         new_issue_sprints = None
+                    else:
+                        # Only one LAST Sprint will be assigned to the issue ## TO DO
+                        new_issue_sprints = new_issue_sprints[-1]
                 else:
                     new_issue_sprints = None
             return new_issue_sprints
@@ -1834,6 +1844,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             try:
                 old_field = [issue_details_old[old_issuetype][new_field.strip()].key()]
             except:
+                if new_field == 'Sprint':
+                        val = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field.strip()]['id'])
+                        return val
                 return value
         if len(old_field) > 1:
             for o_field in old_field:
@@ -1961,7 +1974,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         for values in issue_details_new[new_issuetype][n_field]['allowed values']:
                             if val == values:
                                 data_value.append({"name": val})
-                                continue
+                                break
                 else:
                     data_value = [{"name": get_str_from_lst(n_field_value)}]
             else:
@@ -1970,7 +1983,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for value in issue_details_new[new_issuetype][n_field]['allowed values']:
                 if n_field_value == value:
                     data_value = {"value":  n_field_value}
-                    continue
+                    break
                 else:
                     data_value = None
             data_value = None if n_field_value == '' else {"value":  n_field_value}
@@ -1985,7 +1998,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         for values in issue_details_new[new_issuetype][n_field]['allowed values']:
                             if value_value == values[0] and value_child == values[1]:
                                 data_value = {"value": value_value, "child": {"value": value_child}}
-                                continue
+                                break
                 except:
                     data_value = None
             else:
@@ -2018,7 +2031,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for k, v in items_lst.items():
                 if data_val[issue_details_new[issuetype]['Parent Link']['id']] in v:
                     parent_found = 1
-                    continue
+                    break
             if parent_found == 0:
                 data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
     except:
@@ -2289,7 +2302,10 @@ def main_program():
             print("[INFO] Sprints migrated in '{}' seconds.".format(time.time() - start_sprints_time), '', sep='\n')
     else:
         if limit_migration_data != 0:
-            jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+            if start_jira_key != max_id:
+                jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+            else:
+                jql_details = 'project = {} AND key >= {} AND key <= {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
         else:
             jql_details = 'project = {} AND key >= {} {} order by key ASC'.format(project_old, start_jira_key, recently_updated)
         get_issues_by_jql(jira_old, jql=jql_details, types=True)
@@ -2515,7 +2531,7 @@ def change_configs():
                 validation_error = 1
         
         try:
-            if old_board_id != '':
+            if old_board_id.strip() != '':
                 old_board_id = int(old_board_id.strip())
         except:
             if migrate_sprints_check == 1:
