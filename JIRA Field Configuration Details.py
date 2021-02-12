@@ -8,7 +8,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from time import sleep
 
-current_version = '0.1'
+current_version = '0.2'
 JIRA_BASE_URL = ''
 project = ''
 output_file = ''
@@ -242,8 +242,6 @@ def main_program():
     project = source_project.get().strip()
     JIRA_BASE_URL = source_jira.get().strip()
     
-    if os.path.exists(output_file) is False:
-        select_file()
     main.destroy()
     if len(username) < 6 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
@@ -336,8 +334,7 @@ tk.Button(main, text='Browse', command=select_file, width=15).grid(row=7, column
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=8, columnspan=4)
 
 tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=9, column=0, pady=8, columnspan=4, rowspan=2)
-
-tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=9, column=3, sticky=E, padx=10)
+tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=10, column=3, sticky=E, padx=10)
 
 tk.mainloop()
 
