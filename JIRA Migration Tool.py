@@ -1052,13 +1052,11 @@ def migrate_status(new_issue, old_issue):
             new_issue_type = issuetype
             break
     
-    for k, v in new_transitions.items():
-        if k == new_issue_type:
-            for t in v:
-                if t[0].upper() in graph.keys():
-                    graph[t[0].upper()].append(t[2].upper())
-                else:
-                    graph[t[0].upper()] = [t[2].upper()]
+    for t in new_transitions[new_issue_type]:
+        if t[0].upper() in graph.keys():
+            graph[t[0].upper()].append(t[2].upper())
+        else:
+            graph[t[0].upper()] = [t[2].upper()]
     if old_status is None:
         old_status = graph[new_issue_type][0][0]
     transition_path = find_shortest_path(graph, old_status.upper(), new_status.upper(), [])
@@ -1066,12 +1064,10 @@ def migrate_status(new_issue, old_issue):
         return
     
     status_transitions = []
-    for k, v in new_transitions.items():
-        if k == new_issue_type:
-            for i in range(1, len(transition_path)):
-                for t in v:
-                    if t[0].upper() == transition_path[i-1] and t[2].upper() == transition_path[i]:
-                        status_transitions.append(t[1])
+    for i in range(1, len(transition_path)):
+        for t in new_transitions[new_issue_type]:
+            if t[0].upper() == transition_path[i-1] and t[2].upper() == transition_path[i]:
+                status_transitions.append(t[1])
     
     for s in status_transitions:
         if resolution is None:
@@ -1426,7 +1422,8 @@ def delete_extra_issues(max_id):
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
             find_max_id(key)
-    
+            return key
+        
     # Check if that Issue available in the Source JIRA Project
     max_id = find_max_id(max_id)
     
@@ -2154,6 +2151,17 @@ def main_program():
             key = find_max_id(key)
             return key
             
+    def find_min_id(key):
+        global jira_old
+        
+        try:
+            min_issue = jira_old.issue(key)
+            return key
+        except:
+            key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
+            key = find_min_id(key)
+            return key
+            
     start_time = time.time()
     
     username = user.get()
@@ -2218,6 +2226,7 @@ def main_program():
     else:
         jql_max = 'project = {} order by key DESC'.format(project_old)
         max_processing_key = jira_old.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
+    start_jira_key = find_min_id(start_jira_key)
     
     # Check issues updated within the last number of days
     recently_updated = ''
