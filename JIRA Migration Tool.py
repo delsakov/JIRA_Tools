@@ -270,6 +270,8 @@ def get_transitions(project, jira_url, new=False):
     global old_transitions, new_transitions, auth, migrate_statuses_check, headers
     print("[START] Retrieving Transitions and Statuses for '{}' project from JIRA.".format(project))
     
+    statuses_lst = []
+    
     def get_workflows(project, jira_url, new):
         global sub_tasks, auth
         url = jira_url + '/rest/projectconfig/1/workflowscheme/' + project
@@ -301,8 +303,21 @@ def get_transitions(project, jira_url, new=False):
                 workflow_data = json.loads(workflow_string)
                 transition_details = []
                 for status in workflow_data["sources"]:
-                    for target in status["targets"]:
-                        transition_details.append([status["fromStatus"]["name"], target['transitionName'], target['toStatus']['name']])
+                    if len(status["targets"]) > 0:
+                        for target in status["targets"]:
+                            transition_details.append([status["fromStatus"]["name"], target['transitionName'], target['toStatus']['name']])
+                    else:
+                        statuses_lst.append(status["fromStatus"]["name"])
+                        transition_details.append([status["fromStatus"]["name"], status["fromStatus"]["name"], ''])
+                temp_transitions = []
+                for transition in transition_details:
+                    if transition[2] == '':
+                        for missing_status in statuses_lst:
+                            if transition[2] == '':
+                                transition[2] = missing_status
+                            else:
+                                temp_transitions.append([missing_status, missing_status, missing_status])
+                transition_details.extend(temp_transitions)
                 transitions[issuetype] = transition_details
         if new is False:
             old_transitions = transitions
@@ -1212,7 +1227,7 @@ def get_fields_list_by_project(jira, project):
                                 'allowed values': None if allowed_values == [] else allowed_values,
                                 'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'],
                                 'validated': True if 'allowedValues' in issuetype['fields'][field_id] else False}
-            issuetype_fields[issuetype_name][field_name] = field_attributes
+            issuetype_fields[issuetype_name][field_name.strip()] = field_attributes
     return issuetype_fields
 
 
@@ -1830,7 +1845,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     team = '' if value is None else get_team_id(value[0])
                     return team
             else:
-                return get_new_value_from_mapping(value, new_field)
+                return get_new_value_from_mapping(old_value, new_field)
             
             return get_new_value_from_mapping(old_value, new_field)
         
@@ -1934,83 +1949,84 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             data_val[n_values['id']] = get_old_system_field(n_field)
     
     # Custom fields
-    for n_field in fields_mappings[old_issuetype].keys():
-        if issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team']:
-            continue
-        if n_field == '':
-            continue
-        if n_field not in issue_details_new[issuetype].keys() or n_field in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] or n_field in jira_system_fields:
-            continue
-        data_value = None
-        o_field_value = get_old_field(n_field, data_val=data_val)
-        n_field_value = '' if (o_field_value is None or o_field_value == 'None') else o_field_value
-        if issue_details_new[issuetype][n_field]['type'] in ['number', 'date']:
-            data_value = None if n_field_value == '' else n_field_value
-        elif issue_details_new[issuetype][n_field]['type'] in ['string']:
-            data_value = '' if n_field_value == '' else get_str_from_lst(n_field_value)
-        elif issue_details_new[issuetype][n_field]['type'] in ['user', 'array']:
-            if issue_details_new[issuetype][n_field]['custom type'] == 'multiuserpicker':
-                if type(n_field_value) == list and n_field_value != '':
-                    data_value = []
-                    for i in n_field_value:
-                        try:
-                            data_value.append({"name": i.name})
-                        except:
-                            data_value.append({"name": None})
+    if old_issuetype in fields_mappings.keys():
+        for n_field in fields_mappings[old_issuetype].keys():
+            if issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team']:
+                continue
+            if n_field == '':
+                continue
+            if n_field not in issue_details_new[issuetype].keys() or n_field in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] or n_field in jira_system_fields:
+                continue
+            data_value = None
+            o_field_value = get_old_field(n_field, data_val=data_val)
+            n_field_value = '' if (o_field_value is None or o_field_value == 'None') else o_field_value
+            if issue_details_new[issuetype][n_field]['type'] in ['number', 'date']:
+                data_value = None if n_field_value == '' else n_field_value
+            elif issue_details_new[issuetype][n_field]['type'] in ['string']:
+                data_value = '' if n_field_value == '' else get_str_from_lst(n_field_value)
+            elif issue_details_new[issuetype][n_field]['type'] in ['user', 'array']:
+                if issue_details_new[issuetype][n_field]['custom type'] == 'multiuserpicker':
+                    if type(n_field_value) == list and n_field_value != '':
+                        data_value = []
+                        for i in n_field_value:
+                            try:
+                                data_value.append({"name": i.name})
+                            except:
+                                data_value.append({"name": None})
+                    else:
+                        data_value = None if n_field_value == '' else [{"name": i} if i != '' else {"name": None} for i in n_field_value]
+                elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
+                    if type(n_field_value) == list and n_field_value != '':
+                        data_value = None if n_field_value == '' else [i for i in n_field_value]
+                    else:
+                        data_value = None if n_field_value == '' else [n_field_value]
+                elif issue_details_new[issuetype][n_field]['custom type'] == 'multiselect':
+                    if issue_details_new[new_issuetype][n_field]['validated'] is True and n_field_value is not None:
+                        data_value = []
+                        for val in n_field_value:
+                            for values in issue_details_new[new_issuetype][n_field]['allowed values']:
+                                if val == values:
+                                    data_value.append({"name": val})
+                                    break
+                    else:
+                        data_value = [{"name": get_str_from_lst(n_field_value)}]
                 else:
-                    data_value = None if n_field_value == '' else [{"name": i} if i != '' else {"name": None} for i in n_field_value]
-            elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
-                if type(n_field_value) == list and n_field_value != '':
-                    data_value = None if n_field_value == '' else [i for i in n_field_value]
+                    data_value = None if n_field_value == '' else {"name":  n_field_value}
+            elif issue_details_new[issuetype][n_field]['type'] in ['option'] and issue_details_new[issuetype][n_field]['validated'] is True:
+                for value in issue_details_new[new_issuetype][n_field]['allowed values']:
+                    if n_field_value == value:
+                        data_value = {"value":  n_field_value}
+                        break
+                    else:
+                        data_value = None
+                data_value = None if n_field_value == '' else {"value":  n_field_value}
+            elif issue_details_new[issuetype][n_field]['type'] == 'option-with-child':
+                if n_field_value == '':
+                    data_value = '[!DROP]'
+                elif type(n_field_value) == str:
+                    try:
+                        value_value = n_field_value.split(' --> ')[0]
+                        value_child = n_field_value.split(' --> ')[1]
+                        if issue_details_new[new_issuetype][n_field]['validated'] is True:
+                            for values in issue_details_new[new_issuetype][n_field]['allowed values']:
+                                if value_value == values[0] and value_child == values[1]:
+                                    data_value = {"value": value_value, "child": {"value": value_child}}
+                                    break
+                    except:
+                        data_value = None
                 else:
-                    data_value = None if n_field_value == '' else [n_field_value]
-            elif issue_details_new[issuetype][n_field]['custom type'] == 'multiselect':
-                if issue_details_new[new_issuetype][n_field]['validated'] is True and n_field_value is not None:
-                    data_value = []
-                    for val in n_field_value:
-                        for values in issue_details_new[new_issuetype][n_field]['allowed values']:
-                            if val == values:
-                                data_value.append({"name": val})
-                                break
-                else:
-                    data_value = [{"name": get_str_from_lst(n_field_value)}]
-            else:
-                data_value = None if n_field_value == '' else {"name":  n_field_value}
-        elif issue_details_new[issuetype][n_field]['type'] in ['option'] and issue_details_new[issuetype][n_field]['validated'] is True:
-            for value in issue_details_new[new_issuetype][n_field]['allowed values']:
-                if n_field_value == value:
-                    data_value = {"value":  n_field_value}
-                    break
-                else:
-                    data_value = None
-            data_value = None if n_field_value == '' else {"value":  n_field_value}
-        elif issue_details_new[issuetype][n_field]['type'] == 'option-with-child':
-            if n_field_value == '':
-                data_value = '[!DROP]'
-            elif type(n_field_value) == str:
-                try:
-                    value_value = n_field_value.split(' --> ')[0]
-                    value_child = n_field_value.split(' --> ')[1]
-                    if issue_details_new[new_issuetype][n_field]['validated'] is True:
-                        for values in issue_details_new[new_issuetype][n_field]['allowed values']:
-                            if value_value == values[0] and value_child == values[1]:
-                                data_value = {"value": value_value, "child": {"value": value_child}}
-                                break
-                except:
-                    data_value = None
+                    data_value = n_field_value
             else:
                 data_value = n_field_value
-        else:
-            data_value = n_field_value
-        
-        # Cheking the field MAX lenght and trimming all the extra info
-        if issue_details_new[issuetype][n_field]['custom type'] == 'textfield' and len(data_value) > 255:
-            print("[WARNING] The value in '{}' field would be trimmed. It exceeds the allowed limit of 255 characters.".format(n_field))
-            print("[INFO] Removed part: '{}'".format(data_value[254:]))
-            data_value = data_value[:254]
-        
-        if data_value != '[!DROP]':
-            data_val[issue_details_new[issuetype][n_field]['id']] = data_value
+            
+            # Cheking the field MAX lenght and trimming all the extra info
+            if issue_details_new[issuetype][n_field]['custom type'] == 'textfield' and len(data_value) > 255:
+                print("[WARNING] The value in '{}' field would be trimmed. It exceeds the allowed limit of 255 characters.".format(n_field))
+                print("[INFO] Removed part: '{}'".format(data_value[254:]))
+                data_value = data_value[:254]
+            
+            if data_value != '[!DROP]':
+                data_val[issue_details_new[issuetype][n_field]['id']] = data_value
     
     # Fix for Team management JIRA Portfolio Team field - JPOSERVER-2322
     old_team = eval('new_issue.fields.' + issue_details_new[issuetype]['Team']['id'])
@@ -2343,7 +2359,10 @@ def main_program():
     # Creating missing Dummy issues
     start_dummy_time = time.time()
     jql_max_new = 'project = {} order by key desc'.format(project_new)
-    max_new_id = jira_new.search_issues(jql_str=jql_max_new, maxResults=1, json_result=False)[0].key
+    try:
+        max_new_id = jira_new.search_issues(jql_str=jql_max_new, maxResults=1, json_result=False)[0].key
+    except:
+        max_new_id = None
     issues_for_creation = 0
     if max_new_id is not None and max_id is not None and int(max_new_id.split('-')[1]) < int(max_id.split('-')[1]):
         issues_for_creation = int(max_id.split('-')[1]) - int(max_new_id.split('-')[1])
