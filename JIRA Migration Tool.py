@@ -19,7 +19,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '0.8'
+current_version = '1.0'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -32,6 +32,7 @@ team_project_prefix = ''
 # JIRA API configs
 JIRA_sprint_api = '/rest/agile/1.0/sprint/'
 JIRA_team_api = '/rest/teams-api/1.0/team'
+JIRA_board_api = '/rest/agile/1.0/board/'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
 
 # Sprints configs
@@ -39,6 +40,7 @@ old_sprints = {}
 new_sprints = {}
 old_board_id = 0
 default_board_name = 'Shared Sprints'
+verify = True
 
 # Excel configs
 header_font = Font(color='00000000', bold=True)
@@ -267,7 +269,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 
 def get_transitions(project, jira_url, new=False):
-    global old_transitions, new_transitions, auth, migrate_statuses_check, headers
+    global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify
     print("[START] Retrieving Transitions and Statuses for '{}' project from JIRA.".format(project))
     
     statuses_lst = []
@@ -275,7 +277,7 @@ def get_transitions(project, jira_url, new=False):
     def get_workflows(project, jira_url, new):
         global sub_tasks, auth
         url = jira_url + '/rest/projectconfig/1/workflowscheme/' + project
-        r = requests.get(url, auth=auth, headers=headers)
+        r = requests.get(url, auth=auth, headers=headers, verify=verify)
         workflow_schema_string = r.content.decode('utf-8')
         workflow_schema_details = json.loads(workflow_schema_string)
         workflows = {}
@@ -294,11 +296,11 @@ def get_transitions(project, jira_url, new=False):
             for issuetype in workflow_details:
                 url0 = jira_url + '//rest/projectconfig/1/workflow?workflowName=' + workflow_name + '&projectKey=' + project
                 url1 = jira_url + '/rest/projectconfig/1/workflow?workflowName=' + workflow_name + '&projectKey=' + project
-                r = requests.get(url0, auth=auth, headers=headers)
+                r = requests.get(url0, auth=auth, headers=headers, verify=verify)
                 if r.status_code == 200:
                     workflow_string = r.content.decode('utf-8')
                 else:
-                    r = requests.get(url1, auth=auth, headers=headers)
+                    r = requests.get(url1, auth=auth, headers=headers, verify=verify)
                     workflow_string = r.content.decode('utf-8')
                 workflow_data = json.loads(workflow_string)
                 transition_details = []
@@ -472,24 +474,17 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     global skip_migrated_flag, issues_lst
     
     def sprint_update(param):
-        global items_lst, old_sprints, issue_details_old, skip_migrated_flag, already_migrated_set
+        global items_lst, old_sprints, issue_details_old, skip_migrated_flag, already_migrated_set, JIRA_board_api, headers
 
         jira, jql, start_idx, max_res = param
         sprint_field_id = issue_details_old['Story']['Sprint']['id']
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields=eval("'issuetype," + sprint_field_id + "'"))
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and issue.key.replace(project_new, project_old) in already_migrated_set:
-                    continue
-                if issue.fields.issuetype.name not in items_lst.keys():
-                    items_lst[issue.fields.issuetype.name] = set()
-                    items_lst[issue.fields.issuetype.name].add(issue.key)
-                else:
-                    items_lst[issue.fields.issuetype.name].add(issue.key)
                 issue_sprints = eval('issue.fields.' + sprint_field_id)
                 if issue_sprints is not None:
                     for sprint in issue_sprints:
-                        sprint_id, name, state, start_date, end_date = ('', '', '', '', '')
+                        sprint_id, name, state, start_date, end_date, board_id, board_name = ('', '', '', '', '', '', '')
                         for attr in sprint[sprint.find('[')+1:-1].split(','):
                             if 'id=' in attr:
                                 sprint_id = attr.split('id=')[1]
@@ -501,8 +496,25 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
                                 start_date = '' if attr.split('startDate=')[1] == '<null>' else attr.split('startDate=')[1]
                             if 'endDate=' in attr:
                                 end_date = '' if attr.split('endDate=')[1] == '<null>' else attr.split('endDate=')[1]
+                            if 'rapidViewId=' in attr:
+                                board_id = '' if attr.split('rapidViewId=')[1] == '<null>' else attr.split('rapidViewId=')[1]
+                                url = JIRA_BASE_URL_NEW + JIRA_board_api + str(board_id)
+                                try:
+                                    r = requests.get(url, auth=auth, headers=headers)
+                                    board_details = r.content.decode('utf-8')
+                                    board_data = json.loads(board_details)
+                                    board_name = board_data["name"]
+                                except:
+                                    pass
                         if name not in old_sprints.keys():
-                            old_sprints[name] = {"id": sprint_id, "startDate": start_date, "endDate": end_date, "state": state.upper()}
+                            old_sprints[name] = {"id": sprint_id, "startDate": start_date, "endDate": end_date, "state": state.upper(), "originBoardName": board_name}
+                if skip_migrated_flag == 1 and issue.key.replace(project_new, project_old) in already_migrated_set:
+                    continue
+                if issue.fields.issuetype.name not in items_lst.keys():
+                    items_lst[issue.fields.issuetype.name] = set()
+                    items_lst[issue.fields.issuetype.name].add(issue.key)
+                else:
+                    items_lst[issue.fields.issuetype.name].add(issue.key)
             return (0, param)
         except:
             return (1, param)
@@ -643,9 +655,9 @@ def clean_temp_folder(folder):
 
 
 def get_total_teams():
-    global auth, headers
+    global auth, headers, verify
     url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '/count'
-    r = requests.get(url=url_retrieve, auth=auth, headers=headers)
+    r = requests.get(url=url_retrieve, auth=auth, headers=headers, verify=verify)
     teams_string = r.content.decode('utf-8')
     teams_lst = json.loads(teams_string)
     return teams_lst
@@ -655,11 +667,11 @@ def get_all_shared_teams():
     global teams, verbose_logging, auth, headers, migrate_teams_check, threads, max_retries
     
     def retrieve_teams(i):
-        global teams, auth, headers, migrate_teams_check
+        global teams, auth, headers, migrate_teams_check, verify
         
         try:
             url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '?size=100&page=' + str(i)
-            r = requests.get(url=url_retrieve, auth=auth, headers=headers)
+            r = requests.get(url=url_retrieve, auth=auth, headers=headers, verify=verify)
             teams_string = r.content.decode('utf-8')
             try:
                 teams_lst = json.loads(teams_string)
@@ -703,11 +715,11 @@ def get_team_id(team_name):
     global teams, team_project_prefix, auth
     
     def create_new_team():
-        global teams, auth, headers
+        global teams, auth, headers, verify
         url_create = JIRA_BASE_URL_NEW + JIRA_team_api
         team_name_to_create = team_project_prefix + team_name
         body = eval('{"title": team_name_to_create, "shareable": "true"}')
-        r = requests.post(url_create, json=body, auth=auth, headers=headers)
+        r = requests.post(url_create, json=body, auth=auth, headers=headers, verify=verify)
         team_id = int(r.content.decode('utf-8'))
         teams[team_name_to_create] = team_id
         return str(team_id)
@@ -721,9 +733,10 @@ def get_team_id(team_name):
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
     global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth, max_retries
     global max_id, start_jira_key, headers, recently_updated, JIRA_BASE_URL_NEW, JIRA_sprint_api, default_max_retries
+    global JIRA_board_api
 
     def create_sprint(data):
-        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints
+        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify, jira_old, project_old
 
         url = JIRA_BASE_URL_NEW + JIRA_sprint_api
         try:
@@ -731,7 +744,14 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                 data.pop("startDate", None)
             if data["endDate"] == '':
                 data.pop("endDate", None)
-            r = requests.post(url, json=data, auth=auth, headers=headers)
+            try:
+                jql_count = "project = '{}' and issueFunction in completeInSprint('{}', '{}')".format(project_old, data["originBoardName"], data["name"])
+                issues_cnt = jira_old.search_issues(jql_count, startAt=0, maxResults=1, json_result=True)['total']
+            except:
+                issues_cnt = 0
+            if issues_cnt == 0:
+                return (0, data)
+            r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
             new_sprint_details = r.content.decode('utf-8')
             new_sprint = json.loads(new_sprint_details)
             new_sprints[new_sprint['name']] = {"id": new_sprint['id'], "state": new_sprint['state']}
@@ -741,15 +761,25 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
             return (1, data)
     
     def update_sprint(data):
-        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints
+        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify
         
-        sprint_id, body = data
+        sprint_id, body, closed = data
         url = JIRA_BASE_URL_NEW + JIRA_sprint_api + str(sprint_id)
         try:
-            r = requests.post(url, json=data, auth=auth, headers=headers)
+            r = requests.post(url, json=body, auth=auth, headers=headers, verify=verify)
+            if r.status_code == 400:
+                body["startDate"] = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f%z')
+                body["endDate"] = (datetime.datetime.utcnow() + datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
+                r = requests.post(url, json=body, auth=auth, headers=headers, verify=verify)
             new_sprint_details = r.content.decode('utf-8')
             new_sprint = json.loads(new_sprint_details)
             new_sprints[new_sprint['name']] = {"state": new_sprint['state']}
+            if closed == 1:
+                body = {"state": "CLOSED"}
+                rr = requests.post(url, json=body, auth=auth, headers=headers, verify=verify)
+                new_sprint_details = rr.content.decode('utf-8')
+                new_sprint = json.loads(new_sprint_details)
+                new_sprints[new_sprint['name']] = {"state": new_sprint['state']}
             return (0, data)
         except Exception as e:
             return (0, data)
@@ -757,8 +787,11 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
     def threads_processing(function, items):
         global threads, max_retries
         
+        workers = threads
+        if function == 'update_sprint':
+            workers = 1
         items_for_retry = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(function, i) for i in items}
         for future in futures:
             if future.result()[0] == 1:
@@ -788,13 +821,21 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                 new_sprints[n_sprint.name] = {"id": n_sprint.id, "state": n_sprint.state}
         if proj_old is None:
             print("[INFO] Sprints to be migrated from board '{}'.".format(board_id))
+            url = JIRA_BASE_URL_NEW + JIRA_board_api + str(board_id)
+            try:
+                r = requests.get(url, auth=auth, headers=headers)
+                board_details = r.content.decode('utf-8')
+                board_data = json.loads(board_details)
+                board_name = board_data["name"]
+            except:
+                board_name = ''
             for sprint in jira_old.sprints(board_id=board_id):
                 if sprint.name not in new_sprints.keys():
                     try:
                         old_sprint = jira_old.sprint(sprint.id)
-                        old_sprints[sprint.name] = {"id": sprint.id, "startDate": old_sprint.startDate, "endDate": old_sprint.endDate, "state": old_sprint.state.upper()}
+                        old_sprints[sprint.name] = {"id": sprint.id, "startDate": old_sprint.startDate, "endDate": old_sprint.endDate, "state": old_sprint.state.upper(), "originBoardName": board_name}
                     except:
-                        old_sprints[sprint.name] = {"id": sprint.id, "startDate": '', "endDate": '', "state": sprint.state.upper()}
+                        old_sprints[sprint.name] = {"id": sprint.id, "startDate": '', "endDate": '', "state": sprint.state.upper(), "originBoardName": board_name}
                 n += 1
                 if (n % 20) == 0:
                     print("[INFO] Downloaded metadata for {} out of {} Sprints so far...".format(n, len(jira_old.sprints(board_id=board_id))))
@@ -816,7 +857,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
         sprint_details = []
         for o_sprint_name, o_sprint_details in old_sprints.items():
             if o_sprint_name not in new_sprints.keys():
-                sprint_details.append({"originBoardId": new_board, "name": o_sprint_name, "startDate": old_sprints[o_sprint_name]['startDate'], "endDate": old_sprints[o_sprint_name]['endDate']})
+                sprint_details.append({"originBoardId": new_board, "name": o_sprint_name, "startDate": old_sprints[o_sprint_name]['startDate'], "endDate": old_sprints[o_sprint_name]['endDate'], "originBoardName": old_sprints[o_sprint_name]['originBoardName']})
         max_retries = default_max_retries
         threads_processing(create_sprint, sprint_details)
         print("[END] Sprints have been created with '{}' states.".format(param))
@@ -827,11 +868,18 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
         for o_sprint_name, o_sprint_details in old_sprints.items():
             if o_sprint_name in new_sprints.keys():
                 body = {}
+                closed = 0
                 if param == 'ACTIVE' and new_sprints[o_sprint_name]["state"] == 'FUTURE' and old_sprints[o_sprint_name]['state'] != 'FUTURE':
                     body = {"state": "ACTIVE"}
+                    if old_sprints[o_sprint_name]['state'] == 'CLOSED':
+                        closed = 1
                 if param == 'CLOSED' and new_sprints[o_sprint_name]["state"] == 'ACTIVE' and old_sprints[o_sprint_name]['state'] == 'CLOSED':
                     body = {"state": "CLOSED"}
-                sprint_details.append((new_sprints[o_sprint_name]["id"], body))
+                elif param == 'CLOSED' and new_sprints[o_sprint_name]["state"] == 'FUTURE' and old_sprints[o_sprint_name]['state'] == 'CLOSED':
+                    body = {"state": "ACTIVE"}
+                    closed = 1
+                if body != {}:
+                    sprint_details.append((new_sprints[o_sprint_name]["id"], body, closed))
         max_retries = default_max_retries
         threads_processing(update_sprint, sprint_details)
         print("[END] Sprint statuses have been updated to '{}'.".format(param))
@@ -1555,12 +1603,12 @@ def create_dummy_issues(total_number, batch_size=100):
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
     """ This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. """
-    global auth
+    global auth, verify
     
     session = requests.Session()
     
     url0 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa?id=' + new_issue.id
-    r = session.get(url=url0, auth=auth)
+    r = session.get(url=url0, auth=auth, verify=verify)
     soup = BeautifulSoup(r.text, features="lxml")
     try:
         guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
@@ -1578,7 +1626,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_11, data=payload_11, headers={"Referer": url0})
+    r = session.post(url=url_11, data=payload_11, headers={"Referer": url0}, verify=verify)
     r.raise_for_status()
     
     url_12 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueUpdateFields.jspa'
@@ -1589,7 +1637,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_12, data=payload_12)
+    r = session.post(url=url_12, data=payload_12, verify=verify)
     r.raise_for_status()
     
     url_13 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueConvert.jspa'
@@ -1600,7 +1648,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         "atl_token": session.cookies.get('atlassian.xsrf.token'),
     }
     
-    r = session.post(url=url_13, data=payload_13)
+    r = session.post(url=url_13, data=payload_13, verify=verify)
     r.raise_for_status()
 
 
@@ -1815,6 +1863,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         old_value = {"value": value_value, "child": {"value": value_child}}
                 else:
                     old_value = value_value + ' --> ' + value_child
+            else:
+                old_value = value
             
             if issue_details_old[old_issuetype][field]['type'] in ['string', 'number', 'array'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
                 old_value = value
@@ -2100,7 +2150,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
 def generate_template():
     """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
-    global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads
+    global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads, verify
     
     username = user.get()
     password = passwd.get()
@@ -2111,22 +2161,25 @@ def generate_template():
         mapping_file = mapping_file.split('.xls')[0] + '.xlsx'
     main.destroy()
     if project_old == '' or project_new == '' or JIRA_BASE_URL_NEW == '' or JIRA_BASE_URL_OLD == '':
-        print("[ERROR] Please enter missing configuration parameters in the new window.")
+        print("[WARNING] Missing configuration parameters. Please enter missing configuration parameters in the new window.")
         change_configs()
-    if len(username) < 6 or len(password) < 3:
-        print('[ERROR] JIRA credentials are required. Please enter them on new window.')
+    if len(username) < 3 or len(password) < 3:
+        print('[WARNING] JIRA credentials missing. Please enter them on new window.')
         jira_authorization_popup()
     else:
         auth = (username, password)
         if verbose_logging == 1:
             print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
             exit()
+        jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
+        jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
+
     if project_old == '' or project_new == '' or JIRA_BASE_URL_NEW == '' or JIRA_BASE_URL_OLD == '':
         print("[ERROR] Configuration parameters are not set. Exiting...")
         os.system("pause")
@@ -2150,7 +2203,7 @@ def generate_template():
 def main_program():
     """Migration Processing Main Function - covering 'End to End' process."""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
-    global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key
+    global JIRA_BASE_URL_OLD, atlassian_jira_old, issue_details_old, issue_details_new, start_jira_key, verify
     global limit_migration_data, verbose_logging, issuetypes_mappings, temp_dir_name, migrate_components_check
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
@@ -2212,15 +2265,17 @@ def main_program():
     else:
         auth = (username, password)
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
             if create_remote_link_for_old_issue == 1:
                 atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
             exit()
-    
+        jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
+        jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
+
     # Starting Program
     print('[START] Migration process has been started. Please wait...')
     print()
@@ -2265,7 +2320,7 @@ def main_program():
     if skip_migrated_flag == 1:
         start_already_migrated_time = time.time()
         print("[START] Checking for already migrated issues. They will be skipped.")
-        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key < {} ".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
+        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} ".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
         get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
         print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
         print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time), '', sep='\n')
@@ -2390,7 +2445,6 @@ def main_program():
     # Update and Close Sprints - after migration of issues are done
     if migrate_sprints_check == 1:
         start_update_sprints = time.time()
-        migrate_sprints(proj_old=project_old, param='ACTIVE')
         
         # Calculating total Number of Issues in OLD JIRA Project
         jql_total_old = "project = '{}' {}".format(project_old, recently_updated)
@@ -2400,10 +2454,12 @@ def main_program():
         jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' ".format(project_new)
         total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=1, json_result=True)['total']
         
-        if total_old == total_new:
+        if total_old == total_new or total_new > total_old:
             migrate_sprints(proj_old=project_old, param='CLOSED')
+            migrate_sprints(proj_old=project_old, param='ACTIVE')
         else:
-            print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, int(total_old) - int(total_new)))
+            remaining = int(total_old) - int(total_new)
+            print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, remaining if remaining > 0 else 0))
         print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints), '', sep='\n')
     
     # Delete issues with Summary = 'Dummy Issue'
@@ -2717,7 +2773,7 @@ def jira_authorization_popup():
     
     def jira_save():
         global auth, username, password, jira_old, jira_new, atlassian_jira_old, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW
-        global threads
+        global threads, verify
         
         username = user.get()
         password = passwd.get()
@@ -2731,13 +2787,15 @@ def jira_authorization_popup():
         if verbose_logging == 1:
             print("[INFO] A connection attempt to JIRA server is started.")
         try:
-            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
-            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=2)
+            jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
+            jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
         except Exception as e:
             print("[ERROR] Login to JIRA failed. JIRA could be unavailable or User credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
             exit()
+        jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
+        jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
         jira_popup.quit()
     
     def jira_cancel():
@@ -2841,6 +2899,11 @@ def change_process_last_updated(*args):
 def change_dependencies(*args):
     global including_dependencies_flag
     including_dependencies_flag = process_dependencies.get()
+
+
+def change_verify(*args):
+    global verify
+    verify = False if process_ssl_validation.get() == 1 else True
 
 
 # ------------------ MAIN PROGRAM -----------------------------------
@@ -2955,8 +3018,13 @@ process_dependencies = IntVar(value=including_dependencies_flag)
 Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=22, column=1, sticky=W, padx=55, columnspan=3, pady=0)
 process_dependencies.trace('w', change_dependencies)
 
-tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=23, column=0, pady=8, columnspan=4, rowspan=2)
+verify_flag = 0 if verify is True else 1
+process_ssl_validation = IntVar(value=verify_flag)
+Checkbutton(main, text="Ignore SSL certificate verification.", font=("Helvetica", 9, "italic"), variable=process_ssl_validation).grid(row=23, column=0, sticky=W, padx=20, columnspan=3, pady=0)
+process_ssl_validation.trace('w', change_verify)
 
-tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=24, column=1, sticky=E, padx=20, columnspan=3)
+tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=24, column=0, pady=8, columnspan=4, rowspan=2)
+
+tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=25, column=1, sticky=SE, padx=20, columnspan=3)
 
 tk.mainloop()
