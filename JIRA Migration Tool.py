@@ -2646,7 +2646,8 @@ def main_program():
         dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
         jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
                            "issueFunction in subtasksOf(\"{}\") OR " \
-                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql)
+                           "issueFunction in parentsOf(\"{}\") OR " \
+                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
     
     # Check already migrated issues
