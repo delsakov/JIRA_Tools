@@ -131,7 +131,7 @@ including_dependencies_flag = 1
 json_importer_flag = 1
 
 # Concurrent processing configs
-default_max_retries = 5
+default_max_retries = 7
 max_retries = default_max_retries
 
 # Mappings
@@ -1189,17 +1189,17 @@ def migrate_status(new_issue, old_issue):
 def migrate_issues(issuetype):
     global items_lst, threads, max_retries, default_max_retries
     
-    def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=None):
-        status_code, status = migrate_change_history(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue)
+    def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
+        status_code, status = migrate_change_history(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
         if str(status_code) == '409':
             sleep(1)
-            update_issue_json(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue)
+            update_issue_json(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
         return status
     
     def process_issue(key):
         global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
         global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
-        global max_id, json_importer_flag, issuetypes_mappings
+        global max_id, json_importer_flag, issuetypes_mappings, sub_tasks
 
         def get_new_status(old_status, old_issue_type):
             global status_mappings
@@ -1239,13 +1239,22 @@ def migrate_issues(issuetype):
                     print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
                     return(0, key)
                 else:
+                    parent = None
                     issue_type = old_issue.fields.issuetype.name
                     new_status = get_new_status(old_issue.fields.status.name, issue_type)
-                    status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
+                    if new_issue_type in sub_tasks.keys():
+                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
+                        parent_field = old_issue.fields.parent
+                        parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                    else:
+                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
                     n = 30
                     while True:
                         try:
                             new_issue = jira_new.issue(new_issue_key)
+                            if parent is not None:
+                                convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                                status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                             break
                         except:
                             sleep(1)
@@ -1679,7 +1688,7 @@ def create_dummy_issues(total_number, batch_size=100):
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
     """ This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. """
-    global auth, verify
+    global auth, verify, json_importer_flag
     
     session = requests.Session()
     
@@ -1689,7 +1698,8 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
     try:
         guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
     except:
-        print("[ERROR] Issue can't be converted to Sub-Task")
+        if json_importer_flag == 0:
+            print("[ERROR] Issue can't be converted to Sub-Task")
         return
     
     url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
@@ -1809,8 +1819,8 @@ def save_config(message=True):
     print()
 
 
-def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None):
-    global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id, sub_tasks
+def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
+    global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings
     
     def get_priority(new_issue_type, old_priority):
@@ -1872,7 +1882,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     users = []
     users_set = set()
     
-    if new_issue_type in sub_tasks.keys():
+    if subtask is not None:
         for issuetype, values in issuetypes_mappings.items():
             if values['hierarchy'] == '2':
                 new_issue_type = issuetype
@@ -2040,22 +2050,23 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         pass
     project_issue["priority"] = get_priority(new_issue_type, old_issue.fields.priority.name)
     project_issue["created"] = old_issue.fields.created
-    project_issue["updated"] = old_issue.fields.updated
     project_issue["history"] = histories
     project_issue["worklogs"] = worklogs
     project_issue["comments"] = comments
+    project_issue["issueType"] = new_issue_type
+    project_issue["summary"] = old_issue.fields.summary
     if new is True:
-        project_issue["summary"] = old_issue.fields.summary
-        project_issue["issueType"] = new_issue_type
-        project_issue["status"] = new_status
-        project_issue["resolutionDate"] = old_issue.fields.resolutiondate
-        project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
         project_issue["originalEstimate"] = None if old_issue.fields.timeoriginalestimate is None else get_duration(old_issue.fields.timeoriginalestimate)
         try:
             project_issue["timeSpent"] = get_duration(old_issue.fields.timetracking.timeSpent)
         except:
             project_issue["timeSpent"] = None
         project_issue["estimate"] = None if old_issue.fields.timeestimate is None else get_duration(old_issue.fields.timeestimate)
+    if subtask is None:
+        project_issue["status"] = new_status
+        project_issue["resolutionDate"] = old_issue.fields.resolutiondate
+        project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
+    project_issue["updated"] = old_issue.fields.updated
     project_details["issues"].append(project_issue)
     data["projects"].append(project_details)
     data["users"] = users
