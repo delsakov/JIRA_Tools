@@ -14,7 +14,7 @@ Steps:
 3. Run the Tool with that file for migration process (select the objects to be migrated)
 4. Wait
 
-Note: All IDs are copyed as is (OLD_PROJECT-12345 will be NEW_PROJECT-12345), including Sprints, Issues, FixVersions, Components, Comments, Attachments and Links.
+Note: All IDs are copyed as is (OLD_PROJECT-12345 will be NEW_PROJECT-12345), including Sprints, Issues, FixVersions, Components, Comments, Attachments, Links, Change History and Worklogs (global admin rights required for JIRA to upload change history/worklogs and comments by original authors).
 
 For any questions, bugs - please contact me (Dmitry Elsakov).
 
