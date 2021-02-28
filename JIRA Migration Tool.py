@@ -1239,29 +1239,30 @@ def migrate_issues(issuetype):
                     print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
                     return(0, key)
                 else:
-                    parent = None
-                    issue_type = old_issue.fields.issuetype.name
-                    new_status = get_new_status(old_issue.fields.status.name, issue_type)
-                    if new_issue_type in sub_tasks.keys():
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
-                        parent_field = old_issue.fields.parent
-                        parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
-                    else:
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                    n = 30
-                    while True:
-                        try:
-                            new_issue = jira_new.issue(new_issue_key)
-                            if parent is not None:
-                                convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
-                                status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                            break
-                        except:
-                            sleep(1)
-                            n -= 1
-                            if n < 0:
-                                print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, status))
-                                return(0, key)
+                    if json_importer_flag == 1:
+                        parent = None
+                        issue_type = old_issue.fields.issuetype.name
+                        new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                        if new_issue_type in sub_tasks.keys():
+                            status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
+                            parent_field = old_issue.fields.parent
+                            parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                        else:
+                            status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
+                        n = 60
+                        while True:
+                            try:
+                                new_issue = jira_new.issue(new_issue_key, expand="changelog")
+                                if parent is not None:
+                                    convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                                break
+                            except Exception as e:
+                                sleep(1)
+                                n -= 1
+                                if n < 0:
+                                    print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
+                                    return(1, key)
             
             if migrate_comments_check == 1 and json_importer_flag == 0:
                 migrate_comments(old_issue, new_issue)
@@ -1697,9 +1698,9 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
     soup = BeautifulSoup(r.text, features="lxml")
     try:
         guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
-    except:
+    except Exception as e:
         if json_importer_flag == 0:
-            print("[ERROR] Issue can't be converted to Sub-Task")
+            print("[ERROR] Issue can't be converted to Sub-Task. Details: '{}'.".format(e))
         return
     
     url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
@@ -1821,7 +1822,7 @@ def save_config(message=True):
 
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
-    global issuetypes_mappings
+    global issuetypes_mappings, issue_details_old
     
     def get_priority(new_issue_type, old_priority):
         global field_value_mappings, issue_details_new
@@ -1856,7 +1857,11 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     
     def get_new_board_id():
         global new_board_id, jira_new, project_new, default_board_name
-
+        
+        if len(jira_new.boards()) == 0:
+            board = jira_new.create_board(default_board_name, project_new, location_type='project')
+            new_board_id = board.id
+            return
         for board in jira_new.boards():
             if board.name == default_board_name and project_new in board.filter.query:
                 new_board_id = board.id
@@ -1987,12 +1992,12 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             comments.append(comment)
 
     # Sprints
-    if new is True:
+    if new is True and subtask is None:
         try:
             if new_board_id == 0:
                 get_new_board_id()
-            sprint_field_id = issue_details_new[new_issue_type]['Sprint']['id']
-            issue_sprints = eval('issue.fields.' + sprint_field_id)
+            sprint_field_id = issue_details_old[old_issue.fields.issuetype.name]['Sprint']['id']
+            issue_sprints = eval('old_issue.fields.' + sprint_field_id)
             if issue_sprints is not None:
                 for sprint in issue_sprints:
                     sprint_detail = {}
