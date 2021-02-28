@@ -68,7 +68,7 @@ def get_fields_list_by_project(jira, project):
                                 'type': issuetype['fields'][field_id]['schema']['type'],
                                 'custom type': None if 'custom' not in issuetype['fields'][field_id]['schema'] else issuetype['fields'][field_id]['schema']['custom'].replace('com.atlassian.jira.plugin.system.customfieldtypes:', ''),
                                 'allowed values': None if allowed_values == [] else allowed_values,
-                                'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'],
+                                'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'] if type(issuetype['fields'][field_id]['defaultValue']) == dict else issuetype['fields'][field_id]['defaultValue'][0]['value'],
                                 'validated': True if 'allowedValues' in issuetype['fields'][field_id] else False}
             issuetype_fields[issuetype_name][field_name] = field_attributes
     return issuetype_fields
@@ -201,11 +201,12 @@ def jira_authorization_popup():
         jira_popup.destroy()
         
         try:
-            jira = JIRA(JIRA_BASE_URL, auth=auth)
+            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': False})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
             exit()
+        jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=3, options={'verify': False})
         jira_popup.quit()
     
     def jira_cancel():
@@ -243,18 +244,19 @@ def main_program():
     JIRA_BASE_URL = source_jira.get().strip()
     
     main.destroy()
-    if len(username) < 6 or len(password) < 3:
+    if len(username) < 3 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
         jira_authorization_popup()
     else:
         auth = (username, password)
         try:
-            jira = JIRA(JIRA_BASE_URL, auth=auth)
+            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': False})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
             exit()
-
+        jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=3, options={'verify': False})
+    
     issue_details = {}
 
     if project == '':
@@ -290,6 +292,7 @@ def main_program():
                                        '' if not values['custom type'] else values['custom type']])
         create_excel_sheet(sheet_data, 'Fields Configuration')
 
+
 # ------------------ MAIN PROGRAM -----------------------------------
 print("[INFO] Program has started. Please DO NOT CLOSE that window.")
 print("[INFO] Please IGNORE any WARNINGS - the connection issues are covered by Retry logic.")
@@ -309,7 +312,6 @@ tk.Label(main, text="Project Key:", foreground="black", font=("Helvetica", 10), 
 source_project = tk.Entry(main, width=10, textvariable=project)
 source_project.insert(END, project)
 source_project.grid(row=1, column=3, columnspan=1, sticky=E, padx=10)
-
 
 tk.Label(main, text="____________________________________________________________________________________________________________").grid(row=3, columnspan=4)
 
@@ -337,5 +339,3 @@ tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, w
 tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=10, column=3, sticky=E, padx=10)
 
 tk.mainloop()
-
-
