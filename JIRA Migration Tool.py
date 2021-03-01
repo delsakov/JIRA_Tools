@@ -1855,21 +1855,6 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         duration = isodate.duration_isoformat(datetime.timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes, seconds=seconds))
         return duration
     
-    def get_new_board_id():
-        global new_board_id, jira_new, project_new, default_board_name
-        
-        if len(jira_new.boards()) == 0:
-            board = jira_new.create_board(default_board_name, project_new, location_type='project')
-            new_board_id = board.id
-            return
-        for board in jira_new.boards():
-            if board.name == default_board_name and project_new in board.filter.query:
-                new_board_id = board.id
-                break
-            if new_board_id == 0:
-                board = jira_new.create_board(default_board_name, project_new, location_type='project')
-                new_board_id = board.id
-
     existed_histories = []
     existed_worklogs = []
     existed_comments = []
@@ -1994,8 +1979,6 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     # Sprints
     if new is True and subtask is None:
         try:
-            if new_board_id == 0:
-                get_new_board_id()
             sprint_field_id = issue_details_old[old_issue.fields.issuetype.name]['Sprint']['id']
             issue_sprints = eval('old_issue.fields.' + sprint_field_id)
             if issue_sprints is not None:
@@ -2456,7 +2439,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             data_val['description'] = ' '
         if len(data_val['description']) > 32767:
             data_val['description'] = data_val['description'][:32767]
-            print("[WARNING] 'Description' field value is too long. The trimmed data: '{}'".format(data_val['description'][32767:]))
+            print("[WARNING] '{}' - 'Description' field value is too long. The trimmed data: '{}'".format(new_issue.key, data_val['description'][32767:]))
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
@@ -2550,7 +2533,7 @@ def main_program():
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
     global recently_updated_days, recently_updated, max_id, including_dependencies_flag, already_migrated_set
-    global json_importer_flag, headers, JIRA_imported_api
+    global json_importer_flag, headers, JIRA_imported_api, new_board_id
     
     def find_max_id(key):
         global jira_old
@@ -2573,7 +2556,22 @@ def main_program():
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
             key = find_min_id(key)
             return key
-            
+
+    def get_new_board_id():
+        global new_board_id, jira_new, project_new, default_board_name
+
+        if len(jira_new.boards()) == 0:
+            board = jira_new.create_board(default_board_name, project_new, location_type='project')
+            new_board_id = board.id
+            return
+        for board in jira_new.boards():
+            if board.name == default_board_name and project_new in board.filter.query:
+                new_board_id = board.id
+                break
+            if new_board_id == 0:
+                board = jira_new.create_board(default_board_name, project_new, location_type='project')
+                new_board_id = board.id
+
     start_time = time.time()
     
     username = user.get()
@@ -2783,6 +2781,10 @@ def main_program():
     # -----Metadata Migration-------
     # Main Migration block
     start_processing_time = time.time()
+    # Creating Agile board for the Project for further Sprints migration - if there are no yet one
+    if new_board_id == 0:
+        get_new_board_id()
+    
     for i in range(4):
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] == str(i):
