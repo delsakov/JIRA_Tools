@@ -21,7 +21,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '1.0'
+current_version = '1.1'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -129,6 +129,7 @@ skip_migrated_flag = 1
 last_updated_days_check = 1
 including_dependencies_flag = 1
 json_importer_flag = 1
+including_users_flag = 1
 
 # Concurrent processing configs
 default_max_retries = 7
@@ -845,16 +846,19 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
     start_time = time.time()
     if param == 'FUTURE':
         print("[START] Sprints and Issues processing has been started. All relevant Sprints and Issues are retrieving from Source JIRA.")
-        new_board, n = (0, 0)
-        for board in jira_new.boards():
-            if board.name == name and project in board.filter.query:
+        if new_board_id == 0:
+            new_board, n = (0, 0)
+            for board in jira_new.boards():
+                if board.name == name and project in board.filter.query:
+                    new_board = board.id
+                    new_board_id = new_board
+                    break
+            if new_board == 0:
+                board = jira_new.create_board(name, project, location_type='project')
                 new_board = board.id
                 new_board_id = new_board
-                break
-        if new_board == 0:
-            board = jira_new.create_board(name, project, location_type='project')
-            new_board = board.id
-            new_board_id = new_board
+        else:
+            new_board = new_board_id
     
         if len(jira_new.sprints(board_id=new_board)) > 0:
             for n_sprint in jira_new.sprints(board_id=new_board):
@@ -1242,14 +1246,17 @@ def migrate_issues(issuetype):
                     if json_importer_flag == 1:
                         parent = None
                         issue_type = old_issue.fields.issuetype.name
-                        new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                        try:
+                            new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                        except:
+                            print("[ERROR] Statuse '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
                         if new_issue_type in sub_tasks.keys():
                             status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                             parent_field = old_issue.fields.parent
                             parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
                         else:
                             status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                        n = 60
+                        n = 90
                         while True:
                             try:
                                 new_issue = jira_new.issue(new_issue_key, expand="changelog")
@@ -1257,12 +1264,19 @@ def migrate_issues(issuetype):
                                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                                 break
-                            except Exception as e:
+                            except:
                                 sleep(1)
                                 n -= 1
                                 if n < 0:
-                                    print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
-                                    return(1, key)
+                                    status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
+                                    try:
+                                        new_issue = jira_new.issue(new_issue_key, expand="changelog")
+                                        if parent is not None:
+                                            convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                                            status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                                    except Exception as e:
+                                        print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
+                                        return(1, key)
             
             if migrate_comments_check == 1 and json_importer_flag == 0:
                 migrate_comments(old_issue, new_issue)
@@ -1822,7 +1836,7 @@ def save_config(message=True):
 
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
-    global issuetypes_mappings, issue_details_old
+    global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     
     def get_priority(new_issue_type, old_priority):
         global field_value_mappings, issue_details_new
@@ -1977,7 +1991,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             comments.append(comment)
 
     # Sprints
-    if new is True and subtask is None:
+    if new is True and subtask is None and migrate_sprints_check == 1:
         try:
             sprint_field_id = issue_details_old[old_issue.fields.issuetype.name]['Sprint']['id']
             issue_sprints = eval('old_issue.fields.' + sprint_field_id)
@@ -2040,7 +2054,8 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     project_issue["created"] = old_issue.fields.created
     project_issue["history"] = histories
     project_issue["worklogs"] = worklogs
-    project_issue["comments"] = comments
+    if migrate_comments_check == 1:
+        project_issue["comments"] = comments
     project_issue["issueType"] = new_issue_type
     project_issue["summary"] = old_issue.fields.summary
     if new is True:
@@ -2057,7 +2072,8 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     project_issue["updated"] = old_issue.fields.updated
     project_details["issues"].append(project_issue)
     data["projects"].append(project_details)
-    data["users"] = users
+    if including_users_flag == 1:
+        data["users"] = users
     try:
         r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
     except Exception as e:
@@ -2069,7 +2085,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
-    global jira_new, items_lst
+    global jira_new, items_lst, json_importer_flag
     old_issuetype = old_issue.fields.issuetype.name
     
     def get_new_value_from_mapping(old_value, field_name):
@@ -2416,6 +2432,21 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     if issuetype in sub_tasks.keys() or old_team is not None:
         data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
     
+    # Post-processing for Reporter and Creator for JSON importer case
+    if json_importer_flag == 1:
+        try:
+            data_val.pop('assignee', None)
+        except:
+            pass
+        try:
+            data_val.pop('reporter', None)
+        except:
+            pass
+        try:
+            data_val.pop(issue_details_new[issuetype]['Sprint']['id'], None)
+        except:
+            pass
+    
     # Post-processing fix for Components
     if data_val['components'] is None:
         data_val['components'] = []
@@ -2559,15 +2590,16 @@ def main_program():
 
     def get_new_board_id():
         global new_board_id, jira_new, project_new, default_board_name
-
-        if len(jira_new.boards()) == 0:
-            board = jira_new.create_board(default_board_name, project_new, location_type='project')
-            new_board_id = board.id
-            return
-        for board in jira_new.boards():
-            if board.name == default_board_name and project_new in board.filter.query:
+        
+        if new_board_id == 0:
+            if len(jira_new.boards()) == 0:
+                board = jira_new.create_board(default_board_name, project_new, location_type='project')
                 new_board_id = board.id
-                break
+                return
+            for board in jira_new.boards():
+                if board.name == default_board_name and project_new in board.filter.query:
+                    new_board_id = board.id
+                    return
             if new_board_id == 0:
                 board = jira_new.create_board(default_board_name, project_new, location_type='project')
                 new_board_id = board.id
@@ -3247,8 +3279,19 @@ def change_dependencies(*args):
 
 
 def change_migrate_history(*args):
-    global json_importer_flag
+    global json_importer_flag, including_users_flag
     json_importer_flag = process_change_history.get()
+    if json_importer_flag == 0:
+        including_users_flag = 0
+        process_users.set(including_users_flag)
+
+
+def change_users(*args):
+    global including_users_flag, json_importer_flag
+    including_users_flag = process_users.get()
+    if including_users_flag == 1:
+        json_importer_flag = 1
+        process_change_history.set(json_importer_flag)
 
 
 # ------------------ MAIN PROGRAM -----------------------------------
@@ -3313,8 +3356,12 @@ Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issue
 process_statuses.trace('w', change_migrate_statuses)
 
 process_change_history = IntVar(value=json_importer_flag)
-Checkbutton(main, text="Update Change History / Worklogs from Source JIRA issues (Global Admin access required).", font=("Helvetica", 9, "italic"), variable=process_change_history).grid(row=14, sticky=W, padx=70, column=0, columnspan=3, pady=0)
+Checkbutton(main, text="Update Change History / Worklogs from Source JIRA issues (Global Admin access required)", font=("Helvetica", 9, "italic"), variable=process_change_history).grid(row=14, sticky=W, padx=70, column=0, columnspan=3, pady=0)
 process_change_history.trace('w', change_migrate_history)
+
+process_users = IntVar(value=including_users_flag)
+Checkbutton(main, text="Including Users", font=("Helvetica", 9, "italic"), variable=process_users).grid(row=14, column=1, sticky=E, padx=132, columnspan=4, pady=0)
+process_users.trace('w', change_users)
 
 tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=7, column=3, pady=4, rowspan=3)
 
