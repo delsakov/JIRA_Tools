@@ -357,7 +357,7 @@ def get_hierarchy_config():
             else:
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
         except:
-            print("[WARNING] '{}' Issue Type(s) mapped in mapping file ti '{}'. Skipping...".format(details, issuetype))
+            print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details, issuetype))
 
 
 def prepare_template_data():
@@ -669,20 +669,24 @@ def clean_temp_folder(folder):
 def get_jira_connection():
     global auth, threads, verify, create_remote_link_for_old_issue, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, jira_old, jira_new, atlassian_jira_old
     
+    # Check SSL certification and use unsecured connection if not available
+    try:
+        jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
+        jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
+    except:
+        jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0, options={'verify': False})
+        jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0, options={'verify': False})
+        verify = False
+        print("", "[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.", "", sep='\n')
+        
     try:
         try:
             jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
             jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
-        except:
-            try:
-                jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': False})
-                jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': False})
-                verify = False
-                print("", "[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.", "", sep='\n')
-            except Exception as e:
-                print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
-                os.system("pause")
-                exit()
+        except Exception as e:
+            print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
+            os.system("pause")
+            exit()
         if create_remote_link_for_old_issue == 1:
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
     except Exception as e:
@@ -1324,7 +1328,6 @@ def migrate_issues(issuetype):
     
     for type in issuetypes_mappings[issuetype]['issuetypes']:
         if type in items_lst.keys():
-            print()
             print("[INFO] The total number of '{}' issuetype: {}".format(type, len(items_lst[type])))
             print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
             max_retries = default_max_retries
