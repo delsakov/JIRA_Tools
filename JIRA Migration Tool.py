@@ -357,7 +357,7 @@ def get_hierarchy_config():
             else:
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
         except:
-            print("[ERROR] '{}' Issue Type is not mapped in mapping file. Skipping...".format(issuetype))
+            print("[WARNING] '{}' Issue Type(s) mapped in mapping file ti '{}'. Skipping...".format(details, issuetype))
 
 
 def prepare_template_data():
@@ -1837,6 +1837,7 @@ def save_config(message=True):
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
+    global migrate_statuses_check, migrate_metadata_check
     
     def get_priority(new_issue_type, old_priority):
         global field_value_mappings, issue_details_new
@@ -2022,6 +2023,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             pass
     
     project_issue["key"] = old_issue.key.replace(project_old, project_new)
+    project_issue["issueType"] = new_issue_type
     try:
         user = {}
         user_name = old_issue.fields.reporter.name.upper()
@@ -2050,26 +2052,26 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         project_issue["assignee"] = user_name
     except:
         pass
-    project_issue["priority"] = get_priority(new_issue_type, old_issue.fields.priority.name)
-    project_issue["created"] = old_issue.fields.created
-    project_issue["history"] = histories
-    project_issue["worklogs"] = worklogs
     if migrate_comments_check == 1:
         project_issue["comments"] = comments
-    project_issue["issueType"] = new_issue_type
-    project_issue["summary"] = old_issue.fields.summary
-    if new is True:
+    if new is True and migrate_metadata_check == 1:
         project_issue["originalEstimate"] = None if old_issue.fields.timeoriginalestimate is None else get_duration(old_issue.fields.timeoriginalestimate)
         try:
             project_issue["timeSpent"] = get_duration(old_issue.fields.timetracking.timeSpent)
         except:
             project_issue["timeSpent"] = None
         project_issue["estimate"] = None if old_issue.fields.timeestimate is None else get_duration(old_issue.fields.timeestimate)
-    if subtask is None:
-        project_issue["status"] = new_status
-        project_issue["resolutionDate"] = old_issue.fields.resolutiondate
-        project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
-    project_issue["updated"] = old_issue.fields.updated
+    if migrate_metadata_check == 1:
+        if subtask is None:
+            project_issue["status"] = new_status
+            project_issue["resolutionDate"] = old_issue.fields.resolutiondate
+            project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
+        project_issue["priority"] = get_priority(new_issue_type, old_issue.fields.priority.name)
+        project_issue["created"] = old_issue.fields.created
+        project_issue["history"] = histories
+        project_issue["worklogs"] = worklogs
+        project_issue["summary"] = old_issue.fields.summary
+        project_issue["updated"] = old_issue.fields.updated
     project_details["issues"].append(project_issue)
     data["projects"].append(project_details)
     if including_users_flag == 1:
@@ -2543,8 +2545,15 @@ def generate_template():
     print('[START] Template is being generated. Please wait...')
     print()
     print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
-    issue_details_old = get_fields_list_by_project(jira_old, project_old)
-    issue_details_new = get_fields_list_by_project(jira_new, project_new)
+    
+    try:
+        issue_details_old = get_fields_list_by_project(jira_old, project_old)
+        issue_details_new = get_fields_list_by_project(jira_new, project_new)
+    except Exception as e:
+        print("[ERROR] Issue Details can't be processed due to '{}'.".format(e))
+        os.system("pause")
+        exit()
+        
     print("[END] Fields configuration successfully processed.", '', sep='\n')
     if migrate_statuses_check == 1:
         get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
@@ -2644,8 +2653,15 @@ def main_program():
     print()
     read_excel(file_path=mapping_file)
     print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
-    issue_details_old = get_fields_list_by_project(jira_old, project_old)
-    issue_details_new = get_fields_list_by_project(jira_new, project_new)
+    
+    try:
+        issue_details_old = get_fields_list_by_project(jira_old, project_old)
+        issue_details_new = get_fields_list_by_project(jira_new, project_new)
+    except Exception as e:
+        print("[ERROR] Issue Details can't be processed due to '{}'.".format(e))
+        os.system("pause")
+        exit()
+
     print("[END] Fields configuration successfully processed.", '', sep='\n')
     
     if migrate_statuses_check == 1 or json_importer_flag == 1:
