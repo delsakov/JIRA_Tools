@@ -357,7 +357,7 @@ def get_hierarchy_config():
             else:
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
         except:
-            print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details, issuetype))
+            print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details['issuetypes'], issuetype))
 
 
 def prepare_template_data():
@@ -1108,19 +1108,22 @@ def migrate_attachments(old_issue, new_issue):
     if new_issue.fields.attachment:
         for new_attachment in new_issue.fields.attachment:
             new_attachments.append(new_attachment.filename)
-    if old_issue.fields.attachment:
-        for attachment in old_issue.fields.attachment:
-            if attachment.filename not in new_attachments:
-                file = attachment.get()
-                filename = attachment.filename
-                temp_name = 'temp'
-                full_name = os.path.join(temp_dir_name, temp_name)
-                with open(full_name, 'wb') as f:
-                    f.write(file)
-                with open(full_name, 'rb') as file_new:
-                    jira_new.add_attachment(new_issue.key, file_new, filename)
-                if os.path.exists(full_name):
-                    os.remove(full_name)
+    try:
+        if old_issue.fields.attachment:
+            for attachment in old_issue.fields.attachment:
+                if attachment.filename not in new_attachments:
+                    file = attachment.get()
+                    filename = attachment.filename
+                    temp_name = 'temp'
+                    full_name = os.path.join(temp_dir_name, temp_name)
+                    with open(full_name, 'wb') as f:
+                        f.write(file)
+                    with open(full_name, 'rb') as file_new:
+                        jira_new.add_attachment(new_issue.key, file_new, filename)
+                    if os.path.exists(full_name):
+                        os.remove(full_name)
+    except Exception as e:
+        print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
 
 
 def migrate_status(new_issue, old_issue):
@@ -2579,22 +2582,32 @@ def main_program():
     global json_importer_flag, headers, JIRA_imported_api, new_board_id
     
     def find_max_id(key):
-        global jira_old
+        global jira_old, project_old
         
         try:
             max_issue = jira_old.issue(key)
-            return key
+            if project_old in max_issue.key:
+                return key
+            else:
+                key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
+                key = find_max_id(key)
+                return key
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
             key = find_max_id(key)
             return key
             
     def find_min_id(key):
-        global jira_old
+        global jira_old, project_old
         
         try:
             min_issue = jira_old.issue(key)
-            return key
+            if project_old in min_issue.key:
+                return key
+            else:
+                key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
+                key = find_min_id(key)
+                return key
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
             key = find_min_id(key)
@@ -2643,6 +2656,10 @@ def main_program():
         os.system("pause")
         exit()
     
+    # Loading data from Excel
+    read_excel(file_path=mapping_file)
+    print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
+
     # Checking the JIRA credentials
     if len(username) < 3 or len(password) < 3:
         print('[ERROR] JIRA credentials are required. Please enter them on new window.')
@@ -2650,12 +2667,9 @@ def main_program():
     else:
         auth = (username, password)
         get_jira_connection()
-        
+    
     # Starting Program
-    print('[START] Migration process has been started. Please wait...')
-    print()
-    read_excel(file_path=mapping_file)
-    print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
+    print("[START] Migration process has been started. Please wait...", "", sep='\n')
     
     try:
         issue_details_old = get_fields_list_by_project(jira_old, project_old)
