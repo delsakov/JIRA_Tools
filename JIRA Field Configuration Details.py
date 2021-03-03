@@ -7,17 +7,26 @@ import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from time import sleep
+from sys import exit
+import urllib3
 
-current_version = '0.2'
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+urllib3.disable_warnings(urllib3.exceptions.HTTPWarning)
+urllib3.disable_warnings(urllib3.exceptions.ConnectionError)
+urllib3.disable_warnings()
+
+current_version = '0.3'
 JIRA_BASE_URL = ''
 project = ''
 output_file = ''
 zoom_scale = 90
+verify = True
 
 header_font = Font(color='00000000', bold=True)
 header_fill = PatternFill(fill_type="solid", fgColor="8db5e2")
 hyperlink = Font(underline='single', color='0563C1')
 wb = Workbook()
+
 
 def get_str_from_lst(lst, sep=',', spacing=' '):
     """This function returns list as comma separated string - for exporting in excel"""
@@ -186,7 +195,7 @@ def overwrite_popup():
 
 def jira_authorization_popup():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
-    global auth, username, password, jira, JIRA_BASE_URL
+    global auth, username, password, jira, JIRA_BASE_URL, verify
     
     def jira_save():
         global auth, username, password, jira, JIRA_BASE_URL
@@ -199,14 +208,21 @@ def jira_authorization_popup():
             exit()
         auth = (username, password)
         jira_popup.destroy()
-        
+
         try:
-            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': False})
+            jira1 = JIRA(JIRA_BASE_URL, max_retries=0)
+        except:
+            jira1 = JIRA(JIRA_BASE_URL, max_retries=0, options={'verify': False})
+            verify = False
+            print("", "[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.", "", sep='\n')
+
+        try:
+            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': verify})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
             exit()
-        jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=3, options={'verify': False})
+        jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=3, options={'verify': verify})
         jira_popup.quit()
     
     def jira_cancel():
@@ -235,7 +251,7 @@ def jira_authorization_popup():
 
 
 def main_program():
-    global jira, auth, username, password, project,output_file, JIRA_BASE_URL, issue_details
+    global jira, auth, username, password, project,output_file, JIRA_BASE_URL, issue_details, verify
     
     username = user.get().strip()
     password = passwd.get().strip()
@@ -250,7 +266,14 @@ def main_program():
     else:
         auth = (username, password)
         try:
-            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': False})
+            jira1 = JIRA(JIRA_BASE_URL, max_retries=0)
+        except:
+            jira1 = JIRA(JIRA_BASE_URL, max_retries=0, options={'verify': False})
+            verify = False
+            print("", "[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.", "", sep='\n')
+
+        try:
+            jira = JIRA(JIRA_BASE_URL, auth=auth, max_retries=0, options={'verify': verify})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. Check your Username and Password. Exception: '{}'".format(e))
             os.system("pause")
