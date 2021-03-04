@@ -358,7 +358,10 @@ def get_hierarchy_config():
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
         except:
             print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details['issuetypes'], issuetype))
-
+    
+    # Removing non-mapped items
+    issuetypes_mappings.pop("", None)
+    
 
 def prepare_template_data():
     global old_transitions, new_transitions, issue_details_old, default_validation, jira_system_fields
@@ -1114,7 +1117,7 @@ def migrate_attachments(old_issue, new_issue):
                 if attachment.filename not in new_attachments:
                     file = attachment.get()
                     filename = attachment.filename
-                    temp_name = 'temp'
+                    temp_name = 'temp_' + attachment.id
                     full_name = os.path.join(temp_dir_name, temp_name)
                     with open(full_name, 'wb') as f:
                         f.write(file)
@@ -1848,10 +1851,10 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     def get_priority(new_issue_type, old_priority):
         global field_value_mappings, issue_details_new
         
-        new_priority = issue_details_new[new_issue_type]['Priority']['allowed values'][0]
+        new_priority = issue_details_new[new_issue_type]['Priority']['default value']
         try:
             for new_value, old_values in field_value_mappings['Priority'].items():
-                if str(old_priority.strip()) in old_values:
+                if str(old_priority.strip()) in old_values and new_value != '':
                     return new_value
         except:
             pass
@@ -2154,11 +2157,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             if hasattr(value, 'name'):
                 if issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(value) == []:
                     return None
+                elif new_field == 'Priority' and get_new_value_from_mapping(value.name, new_field) == '':
+                    return {"name": issue_details_new[issuetype]['Priority']['default value']}
                 else:
-                    if new_field == 'Priority' and get_new_value_from_mapping(value.name, new_field) == '':
-                        return {"name": issue_details_new[issuetype]['Priority']['default value']}
-                    else:
-                        return {"name": get_new_value_from_mapping(value.name, new_field)}
+                    return {"name": get_new_value_from_mapping(value.name, new_field)}
             elif hasattr(value, 'value'):
                 return {"value": get_new_value_from_mapping(value.value, new_field)}
             else:
@@ -2377,11 +2379,20 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = []
                         for i in n_field_value:
                             try:
-                                data_value.append({"name": i.name})
+                                if jira_new.search_users(i.name) == []:
+                                    data_value.append({"name": None})
+                                else:
+                                    data_value.append({"name": i.name})
                             except:
                                 data_value.append({"name": None})
                     else:
-                        data_value = None if n_field_value == '' else [{"name": i} if i != '' else {"name": None} for i in n_field_value]
+                        try:
+                            if jira_new.search_users(n_field_value.name) == []:
+                                n_field_value = ''
+                                print("[WARNING] No '{}' User found on Target JIRA instance.".format(n_field_value.name))
+                        except:
+                            n_field_value = ''
+                        data_value = None if n_field_value == '' else [{"name": n_field_value.name}]
                 elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
                     if type(n_field_value) == list and n_field_value != '':
                         data_value = None if n_field_value == '' else [i for i in n_field_value]
@@ -2451,14 +2462,35 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         except:
             pass
         try:
+            data_val.pop('priority', None)
+        except:
+            pass
+        try:
             data_val.pop(issue_details_new[issuetype]['Sprint']['id'], None)
         except:
             pass
     
-    # Post-processing fix for Components
+    # Post-processing fix for Components, versions
     if data_val['components'] is None:
         data_val['components'] = []
-        
+    
+    # Post-processing for OLD Components / Versions with spaces in the very beginning
+    if 'versions' in data_val.keys() and data_val['versions'] != []:
+        temp_versions = []
+        for version in data_val['versions']:
+            temp_versions.append({'name': version['name'].strip()})
+        data_val['versions'] = temp_versions
+    if 'fixVersions' in data_val.keys() and data_val['fixVersions'] != []:
+        temp_versions = []
+        for version in data_val['fixVersions']:
+            temp_versions.append({'name': version['name'].strip()})
+        data_val['fixVersions'] = temp_versions
+    if 'components' in data_val.keys() and data_val['components'] != []:
+        temp_components = []
+        for component in data_val['components']:
+            temp_components.append({'name': component['name'].strip()})
+        data_val['components'] = temp_components
+    
     # Post-processing fix for Parent Links (which is not part of migration)
     try:
         if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys():
@@ -2477,8 +2509,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if data_val['description'] == '\r\n----\r\n':
             data_val['description'] = ' '
         if len(data_val['description']) > 32767:
-            data_val['description'] = data_val['description'][:32767]
-            print("[WARNING] '{}' - 'Description' field value is too long. The trimmed data: '{}'".format(new_issue.key, data_val['description'][32767:]))
+            trimmed_data = data_val['description'][32768:]
+            data_val['description'] = data_val['description'][:32768]
+            print("[WARNING] '{}' - 'Description' field value is too long. The trimmed data: '{}'".format(new_issue.key, trimmed_data))
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
@@ -2599,6 +2632,9 @@ def main_program():
             
     def find_min_id(key):
         global jira_old, project_old
+
+        jql_max = 'project = {} order by key DESC'.format(project_old)
+        max_processing_key = jira_old.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
         
         try:
             min_issue = jira_old.issue(key)
@@ -2606,10 +2642,18 @@ def main_program():
                 return key
             else:
                 key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
+                if int(key.split('-')[1]) > int(max_processing_key.split('-')[1]):
+                    print("", "[ERROR] Max issue available is: '{}'. Start issue id is higher than max key.".format(max_processing_key), "", sep='\n')
+                    os.system("pause")
+                    exit()
                 key = find_min_id(key)
                 return key
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
+            if int(key.split('-')[1]) > int(max_processing_key.split('-')[1]):
+                print("", "[ERROR] Max issue available is: '{}'. Start issue id is higher than max key.".format(max_processing_key), "", sep='\n')
+                os.system("pause")
+                exit()
             key = find_min_id(key)
             return key
 
