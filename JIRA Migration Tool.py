@@ -2509,8 +2509,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if data_val['description'] == '\r\n----\r\n':
             data_val['description'] = ' '
         if len(data_val['description']) > 32767:
-            trimmed_data = data_val['description'][32768:]
-            data_val['description'] = data_val['description'][:32768]
+            trimmed_data = data_val['description'][32767:]
+            data_val['description'] = data_val['description'][:32767]
             print("[WARNING] '{}' - 'Description' field value is too long. The trimmed data: '{}'".format(new_issue.key, trimmed_data))
     
     if verbose_logging == 1:
