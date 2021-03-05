@@ -1247,6 +1247,14 @@ def migrate_issues(issuetype):
                 if json_importer_flag == 1:
                     issue_type = old_issue.fields.issuetype.name
                     new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                    if new_issue_type in sub_tasks.keys():
+                        parent_field = old_issue.fields.parent
+                        parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                        try:
+                            parent_issue = jira_new.issue(parent)
+                        except:
+                            print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                            return (0, key)
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
             except Exception as e:
                 if json_importer_flag == 0:
@@ -1261,12 +1269,17 @@ def migrate_issues(issuetype):
                         except:
                             print("[ERROR] Statuse '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
                         if new_issue_type in sub_tasks.keys():
-                            status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                             parent_field = old_issue.fields.parent
                             parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                            try:
+                                parent_issue = jira_new.issue(parent)
+                            except:
+                                print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                                return (0, key)
+                            status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                         else:
                             status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                        n = 90
+                        n = 120
                         while True:
                             try:
                                 new_issue = jira_new.issue(new_issue_key, expand="changelog")
@@ -1399,7 +1412,18 @@ def load_file():
 def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
     global jira_system_fields, additional_mapping_fields
-    wb.create_sheet(title)
+    try:
+        wb.create_sheet(title)
+    except:
+        converted_value = ''
+        for letter in title:
+            if letter.isalpha() or letter.isnumeric() or letter in [' ']:
+                converted_value += letter
+            else:
+                converted_value += '_'
+        title = converted_value
+        wb.create_sheet(title)
+        
     ws = wb.get_sheet_by_name(title)
     
     start_column = 1
@@ -1848,10 +1872,17 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check
     
-    def get_priority(new_issue_type, old_priority):
+    def get_priority(new_issue_type, old_issue):
         global field_value_mappings, issue_details_new
-        
+
         new_priority = issue_details_new[new_issue_type]['Priority']['default value']
+        old_priority = ''
+        
+        try:
+            old_priority = old_issue.fields.priority.name
+        except:
+            old_priority = ''
+        
         try:
             for new_value, old_values in field_value_mappings['Priority'].items():
                 if str(old_priority.strip()) in old_values and new_value != '':
@@ -2075,7 +2106,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             project_issue["status"] = new_status
             project_issue["resolutionDate"] = old_issue.fields.resolutiondate
             project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
-        project_issue["priority"] = get_priority(new_issue_type, old_issue.fields.priority.name)
+        project_issue["priority"] = get_priority(new_issue_type, old_issue)
         project_issue["created"] = old_issue.fields.created
         project_issue["history"] = histories
         project_issue["worklogs"] = worklogs
@@ -2750,13 +2781,18 @@ def main_program():
             start_jira_key = max_processing_key
         recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
     if including_dependencies_flag == 1:
+        max_processing_key = find_max_id(max_processing_key)
+        start_jira_key = find_min_id(start_jira_key)
         dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
         jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
                            "issueFunction in subtasksOf(\"{}\") OR " \
                            "issueFunction in parentsOf(\"{}\") OR " \
                            "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
-    
+        # max_min_jql = "project = {}".format(project_old) + recently_updated + ' order by key DESC'
+        # max_processing_key = jira_old.search_issues(jql_str=max_min_jql, maxResults=1, json_result=False)[0].key
+        # start_jira_key = jira_old.search_issues(jql_str=max_min_jql.replace('DESC', 'ASC'), maxResults=1, json_result=False)[0].key
+        
     # Check already migrated issues
     if skip_migrated_flag == 1:
         start_already_migrated_time = time.time()
