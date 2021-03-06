@@ -21,7 +21,7 @@ import shutil
 import concurrent.futures
 
 # Migration Tool properties
-current_version = '1.1'
+current_version = '1.2'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -130,6 +130,7 @@ last_updated_days_check = 1
 including_dependencies_flag = 1
 json_importer_flag = 1
 including_users_flag = 1
+failed_issues = []
 
 # Concurrent processing configs
 default_max_retries = 7
@@ -1200,7 +1201,7 @@ def migrate_status(new_issue, old_issue):
                     return
 
 
-def migrate_issues(issuetype):
+def migrate_issues(issuetype, retry=False):
     global items_lst, threads, max_retries, default_max_retries
     
     def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
@@ -1213,7 +1214,7 @@ def migrate_issues(issuetype):
     def process_issue(key):
         global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
         global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
-        global max_id, json_importer_flag, issuetypes_mappings, sub_tasks
+        global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues
 
         def get_new_status(old_status, old_issue_type):
             global status_mappings
@@ -1297,7 +1298,10 @@ def migrate_issues(issuetype):
                                         if parent is not None:
                                             convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                                             status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                                    except Exception as e:
+                                    except:
+                                        if key not in failed_issues:
+                                            failed_issues.append(key)
+                                            return(0, key)
                                         print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
                                         return(1, key)
             
@@ -1324,6 +1328,10 @@ def migrate_issues(issuetype):
                     pass
                 if remote_link_exist == 0:
                     atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
+            try:
+                failed_issues.remove(key)
+            except:
+                pass
             return (0, key)
         except:
             return (1, key)
@@ -1345,16 +1353,22 @@ def migrate_issues(issuetype):
                 print("The following items can't be processed: '{}'".format(items_for_retry))
                 return
     
-    for type in issuetypes_mappings[issuetype]['issuetypes']:
-        if type in items_lst.keys():
-            print("[INFO] The total number of '{}' issuetype: {}".format(type, len(items_lst[type])))
-            print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
-            max_retries = default_max_retries
-            threads_processing(process_issue, items_lst[type])
-        else:
-            print("[INFO] No issues under '{}' issuetype were found. Skipping...".format(type))
-            continue
-        print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
+    if retry is False:
+        for type in issuetypes_mappings[issuetype]['issuetypes']:
+            if type in items_lst.keys():
+                print("[INFO] The total number of '{}' issuetype: {}".format(type, len(items_lst[type])))
+                print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
+                max_retries = default_max_retries
+                threads_processing(process_issue, items_lst[type])
+            else:
+                print("[INFO] No issues under '{}' issuetype were found. Skipping...".format(type))
+                continue
+            print("[END] '{}' issuetype has been migrated to '{}' Issuetype.".format(type, issuetype), '', sep='\n')
+    else:
+        print("", "[START] Re-try logic. The total number of skipped issues: {}".format(len(failed_issues)), sep='\n')
+        max_retries = default_max_retries
+        threads_processing(process_issue, failed_issues)
+        print("[END] Skipped Issues has been re-processed.", '', sep='\n')
 
 
 def get_fields_list_by_project(jira, project):
@@ -2643,33 +2657,31 @@ def main_program():
     global migrate_fixversions_check, validation_error, skip_migrated_flag, last_updated_date, updated_issues_num
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
     global recently_updated_days, recently_updated, max_id, including_dependencies_flag, already_migrated_set
-    global json_importer_flag, headers, JIRA_imported_api, new_board_id
+    global json_importer_flag, headers, JIRA_imported_api, new_board_id, failed_issues
     
-    def find_max_id(key):
-        global jira_old, project_old
+    def find_max_id(key, jira, project):
         
         try:
-            max_issue = jira_old.issue(key)
-            if project_old in max_issue.key:
+            max_issue = jira.issue(key)
+            if project in max_issue.key:
                 return key
             else:
                 key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
-                key = find_max_id(key)
+                key = find_max_id(key, jira, project)
                 return key
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
-            key = find_max_id(key)
+            key = find_max_id(key, jira, project)
             return key
             
-    def find_min_id(key):
-        global jira_old, project_old
+    def find_min_id(key, jira, project):
 
-        jql_max = 'project = {} order by key DESC'.format(project_old)
-        max_processing_key = jira_old.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
+        jql_max = 'project = {} order by key DESC'.format(project)
+        max_processing_key = jira.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
         
         try:
-            min_issue = jira_old.issue(key)
-            if project_old in min_issue.key:
+            min_issue = jira.issue(key)
+            if project in min_issue.key:
                 return key
             else:
                 key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
@@ -2677,7 +2689,7 @@ def main_program():
                     print("", "[ERROR] Max issue available is: '{}'. Start issue id is higher than max key.".format(max_processing_key), "", sep='\n')
                     os.system("pause")
                     exit()
-                key = find_min_id(key)
+                key = find_min_id(key, jira, project)
                 return key
         except:
             key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
@@ -2685,7 +2697,7 @@ def main_program():
                 print("", "[ERROR] Max issue available is: '{}'. Start issue id is higher than max key.".format(max_processing_key), "", sep='\n')
                 os.system("pause")
                 exit()
-            key = find_min_id(key)
+            key = find_min_id(key, jira, project)
             return key
 
     def get_new_board_id():
@@ -2768,7 +2780,7 @@ def main_program():
     else:
         jql_max = 'project = {} order by key DESC'.format(project_old)
         max_processing_key = jira_old.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
-    start_jira_key = find_min_id(start_jira_key)
+    start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
     
     # Check issues updated within the last number of days
     recently_updated = ''
@@ -2781,29 +2793,28 @@ def main_program():
             start_jira_key = max_processing_key
         recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
     if including_dependencies_flag == 1:
-        max_processing_key = find_max_id(max_processing_key)
-        start_jira_key = find_min_id(start_jira_key)
+        max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
+        start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
         dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
         jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
                            "issueFunction in subtasksOf(\"{}\") OR " \
                            "issueFunction in parentsOf(\"{}\") OR " \
                            "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
-        # max_min_jql = "project = {}".format(project_old) + recently_updated + ' order by key DESC'
-        # max_processing_key = jira_old.search_issues(jql_str=max_min_jql, maxResults=1, json_result=False)[0].key
-        # start_jira_key = jira_old.search_issues(jql_str=max_min_jql.replace('DESC', 'ASC'), maxResults=1, json_result=False)[0].key
         
     # Check already migrated issues
     if skip_migrated_flag == 1:
         start_already_migrated_time = time.time()
-        print("[START] Checking for already migrated issues. They will be skipped.")
-        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} ".format(project_new, start_jira_key.replace(project_old, project_new), max_processing_key.replace(project_old, project_new))
+        start_new_jira_key = find_min_id(start_jira_key.replace(project_old, project_new), jira_new, project_new)
+        max_new_processing_key = find_max_id(max_processing_key.replace(project_old, project_new), jira_new, project_new)
+        print("", "[START] Checking for already migrated issues. They will be skipped.", sep='\n')
+        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} ".format(project_new, start_new_jira_key, max_new_processing_key)
         get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
         print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
         print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time), '', sep='\n')
         
     # Calculating Max ID for the project
-    max_id = find_max_id(max_processing_key)
+    max_id = find_max_id(max_processing_key, jira_old, project_old)
     
     # Add last updated issues to migration / update process
     if last_updated_date not in ['YYYY-MM-DD', '']:
@@ -2863,6 +2874,7 @@ def main_program():
         print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.")
     
     # Sprints migration check
+    start_issues_time = time.time()
     if migrate_sprints_check == 1 and json_importer_flag == 0:
         start_sprints_time = time.time()
         if old_board_id == 0:
@@ -2872,7 +2884,6 @@ def main_program():
         if verbose_logging == 1:
             print("[INFO] Sprints migrated in '{}' seconds.".format(time.time() - start_sprints_time), '', sep='\n')
     else:
-        start_issues_time = time.time()
         if limit_migration_data != 0:
             if start_jira_key != max_id:
                 jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
@@ -2935,6 +2946,14 @@ def main_program():
             if v['hierarchy'] == str(i):
                 migrate_issues(issuetype=k)
     print("[INFO] Issues have been migrated in '{}' seconds.".format(time.time() - start_processing_time), '', sep='\n')
+    
+    # Re-try missed items
+    start_retry_time = time.time()
+    if len(failed_issues) > 0:
+        print("[INFO] Re-try logic for skipped issues would be performed.")
+        migrate_issues(issuetype=None, retry=True)
+        print("[INFO] Issues have been migrated in '{}' seconds.".format(time.time() - start_retry_time), '', sep='\n')
+        print("[ERROR] Failed items: '{}'".format(failed_issues), '', sep='\n')
     
     # Cleaning Folder for Attachments migration
     if migrate_attachments_check == 1:
