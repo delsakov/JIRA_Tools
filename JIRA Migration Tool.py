@@ -1239,7 +1239,7 @@ def migrate_issues(issuetype, retry=False):
                 try:
                     if json_importer_flag == 0:
                         new_issue = jira_new.issue(new_issue_key)
-                        new_issue.update(notify=False, fields={'summary': 'Dummy issue - for migration'})
+                        new_issue.update(notify=False, fields={'summary': 'Dummy issue - for migration', 'labels': ['MIGRATION_NOT_COMPLETE']})
                     return (0, key)
                 except:
                     return (0, key)
@@ -1642,12 +1642,12 @@ def delete_extra_issues(max_id):
     total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=1, json_result=True)['total']
     
     # Calculating total Number of Migrated Issues to NEW JIRA Project
-    jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
+    jql_total_new = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
     total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=1, json_result=True)['total']
     
     print("[INFO] Total issues in Source Project: '{}' and total migrated issues: '{}'.".format(total_old, total_new))
     
-    jql_total_new_for_deletion = "project = '{}' AND summary ~ 'Dummy issue - for migration' AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
+    jql_total_new_for_deletion = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
     total_new_for_deletion = jira_new.search_issues(jql_total_new_for_deletion, startAt=0, maxResults=1, json_result=True)['total']
     
     if delete_dummy_flag == 0:
@@ -1710,7 +1710,7 @@ def create_dummy_issues(total_number, batch_size=100):
     new_data['project'] = project_new
     new_data['issuetype'] = eval('{"name": "' + issuetype + '"}')
     new_data['summary'] = "Dummy issue - for migration"
-    new_data['labels'] = ['DUMMY_ISSUE_FOR_MIGRATION']
+    new_data['labels'] = ['MIGRATION_NOT_COMPLETE']
     
     for field in fields:
         for f in issue_details_new[issuetype]:
@@ -2126,6 +2126,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         project_issue["worklogs"] = worklogs
         project_issue["summary"] = old_issue.fields.summary
         project_issue["updated"] = old_issue.fields.updated
+    project_issue["labels"] = ['MIGRATION_NOT_COMPLETE']
     project_details["issues"].append(project_issue)
     data["projects"].append(project_details)
     if including_users_flag == 1:
@@ -2247,9 +2248,13 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     pass
             elif issue_details_old[old_issuetype][field]['type'] == 'option-with-child' and value is not None:
                 value_value = value.value
-                value_child = value.child.value
-                mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
-                if mapped_value is not None:
+                try:
+                    value_child = value.child.value
+                    mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
+                except:
+                    value_child = None
+                    mapped_value = value_value
+                if mapped_value is not None and value_child is not None:
                     mapped_value_value = value.split(' --> ')[0]
                     mapped_value_child = value.split(' --> ')[1]
                 else:
@@ -2265,6 +2270,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                 old_value = None
                     else:
                         old_value = {"value": value_value, "child": {"value": value_child}}
+                elif issue_details_new[new_issuetype][new_field]['type'] in ['option']:
+                    if issue_details_new[new_issuetype][new_field]['validated'] is True:
+                        for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                            if mapped_value_value == values:
+                                old_value = {"value": mapped_value_value}
+                                return old_value
+                            if mapped_value_child == values:
+                                old_value = {"value": mapped_value_child}
+                                return old_value
+                        old_value = None
+                        return old_value
                 else:
                     old_value = value_value + ' --> ' + value_child
             else:
@@ -2808,7 +2824,7 @@ def main_program():
         start_new_jira_key = find_min_id(start_jira_key.replace(project_old, project_new), jira_new, project_new)
         max_new_processing_key = find_max_id(max_processing_key.replace(project_old, project_new), jira_new, project_new)
         print("", "[START] Checking for already migrated issues. They will be skipped.", sep='\n')
-        jql_last_migrated = "project = '{}' AND summary !~ 'Dummy issue - for migration' AND key >= {} AND key <= {} ".format(project_new, start_new_jira_key, max_new_processing_key)
+        jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {} ".format(project_new, start_new_jira_key, max_new_processing_key)
         get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
         print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
         print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time), '', sep='\n')
@@ -2968,7 +2984,7 @@ def main_program():
         total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=1, json_result=True)['total']
         
         # Calculating total Number of Migrated Issues to NEW JIRA Project
-        jql_total_new = "project = '{}' AND summary !~ 'Dummy issue - for migration' ".format(project_new)
+        jql_total_new = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) ".format(project_new)
         total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=1, json_result=True)['total']
         
         if total_old == total_new or total_new > total_old:
