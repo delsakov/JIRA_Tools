@@ -198,10 +198,10 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                     d.append(val)
                 if set(d) != set(empty_row):
                     if excel_sheet_name == 'Project':
-                        JIRA_BASE_URL_OLD = d[0]
-                        JIRA_BASE_URL_NEW = d[2]
-                        project_old = d[1]
-                        project_new = d[3]
+                        JIRA_BASE_URL_OLD = d[0].strip('/').strip()
+                        JIRA_BASE_URL_NEW = d[2].strip('/').strip()
+                        project_old = d[1].strip()
+                        project_new = d[3].strip()
                         if d[4] == 'Target -> Source':
                             mapping_type = 0
                         break
@@ -700,9 +700,13 @@ def get_total_teams():
     global auth, headers, verify
     url_retrieve = JIRA_BASE_URL_NEW + JIRA_team_api + '/count'
     r = requests.get(url=url_retrieve, auth=auth, headers=headers, verify=verify)
-    teams_string = r.content.decode('utf-8')
-    teams_lst = json.loads(teams_string)
-    return teams_lst
+    if str(r.status_code) == '200':
+        teams_string = r.content.decode('utf-8')
+        teams_lst = json.loads(teams_string)
+        return teams_lst
+    else:
+        print("[ERROR] Portfolio / Advanced Roadmaps Plu- in(s) not available. Teams migration will be skipping...")
+        return ''
 
 
 def get_all_shared_teams():
@@ -730,10 +734,13 @@ def get_all_shared_teams():
             return (1, i)
        
     print("[START] Reading ALL available shared teams.")
-    pages = [i for i in range(1, get_total_teams() // 100 + 2)]
-    max_retries = default_max_retries
-    threads_processing(retrieve_teams, pages)
-    print("[END] All teams has been loaded for further items processing.")
+    try:
+        pages = [i for i in range(1, get_total_teams() // 100 + 2)]
+        max_retries = default_max_retries
+        threads_processing(retrieve_teams, pages)
+        print("[END] All teams has been loaded for further items processing.")
+    except:
+        migrate_teams_check = 0
 
 
 def get_team_id(team_name):
@@ -1192,7 +1199,7 @@ def migrate_issues(issuetype, retry=False):
                     try:
                         new_status = get_new_status(old_issue.fields.status.name, issue_type)
                     except:
-                        print("[ERROR] Statuse '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
+                        print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
                     if new_issue_type in sub_tasks.keys():
                         parent_field = old_issue.fields.parent
                         parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
@@ -1833,6 +1840,8 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     sprints = []
     users = []
     users_set = set()
+    if multiple_json_data_processing == 0:
+        already_processed_users = set()
     
     if subtask is not None:
         for issuetype, values in issuetypes_mappings.items():
@@ -2057,7 +2066,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
-    global jira_new, items_lst, json_importer_flag
+    global jira_new, items_lst, json_importer_flag, migrate_teams_check
     
     old_issuetype = old_issue.fields.issuetype.name
     
@@ -2236,8 +2245,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             return get_new_value_from_mapping(old_value, new_field)
         
         old_field = ''
-        if new_field in fields_mappings[old_issuetype].keys():
-            old_field = fields_mappings[old_issuetype][new_field]
+        try:
+            if new_field in fields_mappings[old_issuetype].keys():
+                old_field = fields_mappings[old_issuetype][new_field]
+        except:
+            return old_field
         for fields in old_field:
             if 'issuetype.name' in fields:
                 return get_new_value_from_mapping(old_issuetype, new_field)
@@ -2427,9 +2439,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 data_val[issue_details_new[issuetype][n_field]['id']] = data_value
     
     # Fix for Team management JIRA Portfolio Team field - JPOSERVER-2322
-    old_team = eval('new_issue.fields.' + issue_details_new[issuetype]['Team']['id'])
-    if issuetype in sub_tasks.keys() or old_team is not None:
-        data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
+    if migrate_teams_check == 1:
+        old_team = eval('new_issue.fields.' + issue_details_new[issuetype]['Team']['id'])
+        if issuetype in sub_tasks.keys() or old_team is not None:
+            data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
     
     # Post-processing for Reporter and Creator for JSON importer case
     if json_importer_flag == 1:
@@ -2615,7 +2628,7 @@ def main_program():
     global create_remote_link_for_old_issue, threads, default_board_name, max_processing_key, last_updated_days_check
     global recently_updated_days, recently_updated, max_id, including_dependencies_flag, already_migrated_set
     global json_importer_flag, headers, JIRA_imported_api, new_board_id, failed_issues, multiple_json_data_processing
-    global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes
+    global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes, migrate_teams_check
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
@@ -2867,12 +2880,17 @@ def main_program():
     
     # Teams Migration (skipping if no mapping to Portfolio Teams)
     if migrate_teams_check == 1:
+        teams_processed = 0
         start_teams_time = time.time()
         for f_mappings in fields_mappings.values():
             if 'Team' in f_mappings.keys():
                 get_all_shared_teams()
                 print("[INFO] Teams loaded in '{}' seconds.".format(time.time() - start_teams_time), '', sep='\n')
+                teams_processed = 1
                 break
+        if teams_processed == 0:
+            print("[WARNING] Teams mapping hasn't been found - Teams would not be processed.", "", sep='\n')
+            migrate_teams_check = 0
     else:
         for issuestype, fields in fields_mappings.items():
             if 'Team' in fields.keys():
@@ -3095,7 +3113,7 @@ def change_configs():
         config_popup.destroy()
         
         try:
-            JIRA_BASE_URL_OLD = str(JIRA_BASE_URL_OLD).strip()
+            JIRA_BASE_URL_OLD = str(JIRA_BASE_URL_OLD).strip('/').strip()
         except:
             if JIRA_BASE_URL_OLD == '':
                 print("[ERROR] Source JIRA URL is empty.")
@@ -3107,7 +3125,7 @@ def change_configs():
             validation_error = 1
         
         try:
-            JIRA_BASE_URL_NEW = str(JIRA_BASE_URL_NEW).strip()
+            JIRA_BASE_URL_NEW = str(JIRA_BASE_URL_NEW).strip('/').strip()
         except:
             if JIRA_BASE_URL_NEW == '':
                 print("[ERROR] Target JIRA URL is empty.")
