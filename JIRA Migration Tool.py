@@ -19,9 +19,10 @@ from bs4 import BeautifulSoup
 import json
 import shutil
 import concurrent.futures
+from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.4'
+current_version = '1.5'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -135,11 +136,13 @@ json_importer_flag = 1
 including_users_flag = 1
 # Required for creation JSON file - total_data have to be dumped in JSON file for processing from UI.
 multiple_json_data_processing = 0
+json_file_part_num = 1
 failed_issues = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
 skipped_issuetypes = []
 total_processed = 0
+pool_size = 1
 
 # Concurrent processing configs
 default_max_retries = 7
@@ -643,7 +646,20 @@ def get_str_from_lst(lst, sep=',', spacing=' '):
     return st
 
 
+def grouper(iterable, n, fill_value=None):
+    """Collect data into fixed chunks or blocks"""
+    if fill_value is None:
+        if len(iterable) > n:
+            return [list(iterable)[i:i+n] for i in range(0, len(iterable), n)]
+        else:
+            return [list(iterable)]
+    else:
+        args = [iter(iterable)] * n
+        return zip_longest(*args, fillvalue=fill_value)
+
+
 def create_temp_folder(folder):
+    """Create temp local folder for temporarily store attachments"""
     local_folder = folder
     if os.path.exists(local_folder):
         for filename in os.listdir(local_folder):
@@ -662,6 +678,7 @@ def create_temp_folder(folder):
 
 
 def clean_temp_folder(folder):
+    """Clean the folder tree"""
     shutil.rmtree(folder)
 
 
@@ -705,7 +722,7 @@ def get_total_teams():
         teams_lst = json.loads(teams_string)
         return teams_lst
     else:
-        print("[ERROR] Portfolio / Advanced Roadmaps Plu- in(s) not available. Teams migration will be skipping...")
+        print("[ERROR] Portfolio / Advanced Roadmaps Plug-in(s) not available. Teams migration will be skipping...")
         return ''
 
 
@@ -1132,149 +1149,167 @@ def migrate_status(new_issue, old_issue):
                     return
 
 
-def migrate_issues(issuetype, retry=False):
-    global items_lst, threads, max_retries, default_max_retries
-    
-    def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
-        status_code, status = migrate_change_history(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
-        if str(status_code) == '409':
-            sleep(1)
-            update_issue_json(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
-        return status
-    
-    def process_issue(key):
-        global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
-        global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
-        global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues
-        
-        def get_new_status(old_status, old_issue_type):
-            global status_mappings
-            for n_status, o_statuses in status_mappings[old_issue_type].items():
-                for o_status in o_statuses:
-                    if old_status.upper() == o_status.upper():
-                        return n_status
-            return None
-        
+def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
+    status_code, status = migrate_change_history(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
+    if str(status_code) == '409':
+        sleep(1)
+        update_issue_json(old_issue, new_issue_type, new_status, new=new, new_issue=new_issue, subtask=subtask)
+    return status
+
+
+def get_new_status(old_status, old_issue_type):
+    global status_mappings
+    for n_status, o_statuses in status_mappings[old_issue_type].items():
+        for o_status in o_statuses:
+            if old_status.upper() == o_status.upper():
+                return n_status
+    return None
+
+
+def process_issue(key):
+    global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
+    global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
+    global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old
+    global multiple_json_data_processing
+
+    try:
+        new_issue_type = ''
+        new_issue_key = project_new + '-' + key.split('-')[1]
         try:
-            new_issue_type = ''
-            new_issue_key = project_new + '-' + key.split('-')[1]
+            old_issue = jira_old.issue(key, expand="changelog")
+            if json_importer_flag == 1 or migrate_metadata_check == 1:
+                issue_type = old_issue.fields.issuetype.name
+                for issuetype, details in issuetypes_mappings.items():
+                    if issue_type in details['issuetypes']:
+                        new_issue_type = issuetype
+                        break
+        except:
             try:
-                old_issue = jira_old.issue(key, expand="changelog")
-                if json_importer_flag == 1 or migrate_metadata_check == 1:
-                    issue_type = old_issue.fields.issuetype.name
-                    for issuetype, details in issuetypes_mappings.items():
-                        if issue_type in details['issuetypes']:
-                            new_issue_type = issuetype
-                            break
-            except:
-                try:
-                    if json_importer_flag == 0:
-                        new_issue = jira_new.issue(new_issue_key)
-                        new_issue.update(notify=False, fields={'summary': 'Dummy issue - for migration', 'labels': ['MIGRATION_NOT_COMPLETE']})
-                    return (0, key)
-                except:
-                    return (0, key)
-            try:
-                new_issue = jira_new.issue(new_issue_key, expand="changelog")
-                if json_importer_flag == 1:
-                    issue_type = old_issue.fields.issuetype.name
-                    new_status = get_new_status(old_issue.fields.status.name, issue_type)
-                    if new_issue_type in sub_tasks.keys() and new_issue_type != new_issue.fields.issuetype.name:
-                        parent_field = old_issue.fields.parent
-                        parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
-                        try:
-                            parent_issue = jira_new.issue(parent)
-                        except:
-                            print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
-                            return (0, key)
-                        convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-            except Exception as e:
                 if json_importer_flag == 0:
-                    print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
-                    return(0, key)
-                else:
-                    parent = None
-                    issue_type = old_issue.fields.issuetype.name
-                    try:
-                        new_status = get_new_status(old_issue.fields.status.name, issue_type)
-                    except:
-                        print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
-                    if new_issue_type in sub_tasks.keys():
-                        parent_field = old_issue.fields.parent
-                        parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                    new_issue = jira_new.issue(new_issue_key)
+                    new_issue.update(notify=False, fields={'labels': ['MIGRATION_NOT_COMPLETE']})
+                return (0, key)
+            except:
+                return (0, key)
+        try:
+            new_issue = jira_new.issue(new_issue_key, expand="changelog")
+            if json_importer_flag == 1:
+                issue_type = old_issue.fields.issuetype.name
+                new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                if new_issue_type in sub_tasks.keys() and new_issue_type != new_issue.fields.issuetype.name:
+                    parent_field = old_issue.fields.parent
+                    parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                    if parent is None:
                         try:
-                            parent_issue = jira_new.issue(parent)
+                            parent = eval('old_issue.fields.' + issue_details_old[old_issue.fields.issuetype.name]['Epic Link']['id'])
                         except:
                             print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
                             return (0, key)
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
-                    elif old_issue.key.replace(project_old, project_new) not in already_processed_json_importer_issues:
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                    n = 60
-                    while True:
-                        try:
-                            new_issue = jira_new.issue(new_issue_key, expand="changelog")
-                            if parent is not None:
-                                convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
-                                status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                            break
-                        except:
-                            sleep(1)
-                            n -= 1
-                            if n < 0:
-                                if new_issue.key not in already_processed_json_importer_issues:
-                                    status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                                try:
-                                    new_issue = jira_new.issue(new_issue_key, expand="changelog")
-                                    if parent is not None:
-                                        convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
-                                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                                except:
-                                    if key not in failed_issues:
-                                        failed_issues.append(key)
-                                        return(0, key)
-                                    print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
-                                    return(1, key)
-            
-            if migrate_comments_check == 1 and json_importer_flag == 0:
-                migrate_comments(old_issue, new_issue)
-            if migrate_links_check == 1:
-                migrate_links(old_issue, new_issue)
-            if migrate_attachments_check == 1:
-                migrate_attachments(old_issue, new_issue)
-            if migrate_metadata_check == 1:
-                update_new_issue_type(old_issue, new_issue, new_issue_type)
-            if migrate_statuses_check == 1 and json_importer_flag == 0:
+                    try:
+                        parent_issue = jira_new.issue(parent)
+                    except:
+                        print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                        return (0, key)
+                    convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+        except Exception as e:
+            if json_importer_flag == 0:
+                print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
+                return(0, key)
+            else:
+                parent = None
+                issue_type = old_issue.fields.issuetype.name
                 try:
-                    migrate_status(new_issue, old_issue)
-                except Exception as e:
-                    print(e)
-            if create_remote_link_for_old_issue == 1:
-                remote_link_exist = 0
-                try:
-                    for r_link in jira_old.remote_links(old_issue.key):
-                        if r_link.object.title == new_issue.key and r_link.relationship == migrated_text:
-                            remote_link_exist = 1
+                    new_status = get_new_status(old_issue.fields.status.name, issue_type)
                 except:
-                    pass
-                if remote_link_exist == 0:
-                    atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
+                    print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
+                if new_issue_type in sub_tasks.keys():
+                    parent_field = old_issue.fields.parent
+                    parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
+                    if parent is None:
+                        try:
+                            parent = eval('old_issue.fields.' + issue_details_old[old_issue.fields.issuetype.name]['Epic Link']['id'])
+                        except:
+                            print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                            return (0, key)
+                    try:
+                        parent_issue = jira_new.issue(parent)
+                    except:
+                        print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                        return (0, key)
+                    status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
+                elif old_issue.key.replace(project_old, project_new) not in already_processed_json_importer_issues:
+                    status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
+                n = 60
+                while True:
+                    try:
+                        new_issue = jira_new.issue(new_issue_key, expand="changelog")
+                        if parent is not None:
+                            convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                            status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                        break
+                    except:
+                        sleep(1)
+                        n -= 1
+                        if n < 0:
+                            if new_issue.key not in already_processed_json_importer_issues:
+                                status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
+                            try:
+                                new_issue = jira_new.issue(new_issue_key, expand="changelog")
+                                if parent is not None:
+                                    convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
+                                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                            except:
+                                if key not in failed_issues:
+                                    failed_issues.append(key)
+                                    return(0, key)
+                                print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
+                                return(1, key)
+        if migrate_comments_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0:
+            migrate_comments(old_issue, new_issue)
+        if migrate_links_check == 1:
+            migrate_links(old_issue, new_issue)
+        if migrate_attachments_check == 1:
+            migrate_attachments(old_issue, new_issue)
+        if migrate_metadata_check == 1:
+            update_new_issue_type(old_issue, new_issue, new_issue_type)
+        if migrate_statuses_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0:
             try:
-                failed_issues.remove(key)
+                migrate_status(new_issue, old_issue)
+            except Exception as e:
+                print(e)
+        if create_remote_link_for_old_issue == 1:
+            remote_link_exist = 0
+            try:
+                for r_link in jira_old.remote_links(old_issue.key):
+                    if r_link.object.title == new_issue.key and r_link.relationship == migrated_text:
+                        remote_link_exist = 1
             except:
                 pass
-            return (0, key)
+            if remote_link_exist == 0:
+                atlassian_jira_old.create_or_update_issue_remote_links(old_issue.key, JIRA_BASE_URL_NEW + '/browse/' + new_issue.key, title=new_issue.key, relationship='Migrated to')
+        try:
+            failed_issues.remove(key)
         except:
-            return (1, key)
-        
+            pass
+        return (0, key)
+    except:
+        return (1, key)
+
+
+def migrate_issues(issuetype, retry=False):
+    global items_lst, threads, max_retries, default_max_retries, pool_size
+    
     if retry is False:
         for type in issuetypes_mappings[issuetype]['issuetypes']:
             if type in items_lst.keys():
                 print("[INFO] The total number of '{}' issuetype: {}".format(type, len(items_lst[type])))
                 print("[START] Copying from old '{}' Issuetype to new '{}' Issuetype...".format(type, issuetype))
                 max_retries = default_max_retries
-                threads_processing(process_issue, items_lst[type])
+                if pool_size > 1:
+                    processes_processing(process_issue, items_lst[type])
+                else:
+                    threads_processing(process_issue, items_lst[type])
             else:
                 print("[INFO] No issues under '{}' issuetype were found. Skipping...".format(type))
                 continue
@@ -1282,7 +1317,10 @@ def migrate_issues(issuetype, retry=False):
     else:
         print("", "[START] Re-try logic. The total number of skipped issues: {}".format(len(failed_issues)), sep='\n')
         max_retries = default_max_retries
-        threads_processing(process_issue, failed_issues)
+        if pool_size > 1:
+            processes_processing(process_issue, failed_issues)
+        else:
+            threads_processing(process_issue, failed_issues)
         print("[END] Skipped Issues has been re-processed.", '', sep='\n')
 
 
@@ -1545,7 +1583,7 @@ def delete_extra_issues(max_id):
     
     print("[INFO] Total issues in Source Project: '{}' and total migrated issues: '{}'.".format(total_old, total_new))
     
-    jql_total_new_for_deletion = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
+    jql_total_new_for_deletion = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE') AND key >= {} AND key <= {}".format(project_new, start_jira_key.replace(project_old, project_new), max_id.replace(project_old, project_new))
     total_new_for_deletion = jira_new.search_issues(jql_total_new_for_deletion, startAt=0, maxResults=1, json_result=True)['total']
     
     if delete_dummy_flag == 0:
@@ -1642,7 +1680,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
         guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
     except Exception as e:
         if json_importer_flag == 0:
-            print("[ERROR] Issue can't be converted to Sub-Task. Details: '{}'.".format(e))
+            print("[ERROR] Issue '{}' can't be converted to Sub-Task. Details: '{}'.".format(new_issue.key, e))
         return
     
     url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
@@ -1684,7 +1722,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
 def load_config(message=True):
     """Loading pre-saved values from 'config.json' file."""
     global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date, start_jira_key
-    global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads
+    global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads, pool_size
     
     if os.path.exists(config_file) is True:
         try:
@@ -1717,6 +1755,8 @@ def load_config(message=True):
                     last_updated_date = v
                 elif k == 'threads':
                     threads = v
+                elif k == 'pool_size':
+                    pool_size = v
             if message is True:
                 print("[INFO] Configuration has been successfully loaded from '{}' file.".format(config_file))
         except Exception as er:
@@ -1746,6 +1786,7 @@ def save_config(message=True):
             'start_jira_key': start_jira_key,
             'last_updated_date': last_updated_date,
             'threads': threads,
+            'pool_size': pool_size,
             }
     
     try:
@@ -1766,23 +1807,20 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues
-    global multiple_json_data_processing, total_data, already_processed_users
+    global multiple_json_data_processing, total_data, already_processed_users, total_processed
     
     def update_issues_json(data):
-        global auth, headers, verify, JIRA_BASE_URL_NEW, JIRA_imported_api
+        global project_new, json_file_part_num
         
-        status_code = 0
-        url = JIRA_BASE_URL_NEW + JIRA_imported_api
+        filename = 'JSON_Importer_' + project_new + '_PART_' + str(json_file_part_num) + '.json'
+        json_file_part_num += 1
+
         try:
-            r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
-            status_code = r.status_code
-            if str(r.status_code) == '409':
-                sleep(1)
-                status_code = update_issues_json(data)
+            with open(filename, 'w') as outfile:
+                json.dump(data, outfile)
+            print("[INFO] File '{}' has been created.".format(filename))
         except:
-            pass
-        
-        return status_code
+            print("[ERROR] JSON File can't be created.")
     
     def get_priority(new_issue_type, old_issue):
         global field_value_mappings, issue_details_new
@@ -2040,21 +2078,20 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     if including_users_flag == 1:
         data["users"] = users
     
-    already_processed_json_importer_issues.add(old_issue.key.replace(project_old, project_new))
     if multiple_json_data_processing == 1 and old_issue.key.replace(project_old, project_new) not in already_processed_json_importer_issues:
         total_data["projects"][0]["issues"].append(project_issue)
         total_data["users"].extend(data["users"])
-        if len(already_processed_json_importer_issues) % 1000 == 0:
-            print("[INFO] Created '{}' issues placeholders so far.".format(len(already_processed_json_importer_issues)))
-        if len(already_processed_json_importer_issues) % 1000 == 0: #or len(already_processed_json_importer_issues) == total_processed:
-            status_code = update_issues_json(total_data)
-            total_data = {}
-            total_data["projects"] = [{"key": project_new, "issues": []}]
-            total_data["users"] = []
-            return status_code
-        else:
-            return 202
-    else:
+        if len(already_processed_json_importer_issues) > 0:
+            if len(already_processed_json_importer_issues) % 5000 == 0:
+                print("[INFO] Processed '{}' issues so far.".format(len(already_processed_json_importer_issues)))
+            if len(already_processed_json_importer_issues) % 1000 == 0 or len(already_processed_json_importer_issues) + 1 == total_processed:
+                update_issues_json(total_data)
+                total_data = {}
+                total_data["projects"] = [{"key": project_new, "issues": []}]
+                total_data["users"] = []
+        already_processed_json_importer_issues.add(old_issue.key.replace(project_old, project_new))
+        return 202
+    if json_importer_flag == 1:
         try:
             r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
             return (r.status_code, r.content)
@@ -2602,8 +2639,10 @@ def generate_template():
 
 
 def threads_processing(function, items):
-    global threads, max_retries
+    global threads, max_retries, pool_size
     
+    if pool_size > 1:
+        get_jira_connection()
     items_for_retry = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(function, i) for i in items}
@@ -2619,6 +2658,16 @@ def threads_processing(function, items):
             return
 
 
+def processes_processing(function, items):
+    global pool_size, threads
+    
+    chunck_size = len(items) // pool_size
+    if chunck_size == 0:
+        chunck_size = 1
+    with concurrent.futures.ProcessPoolExecutor(max_workers=pool_size) as executor:
+        futures = {executor.submit(threads_processing(function, i), i) for i in grouper(items, chunck_size)}
+
+
 def main_program():
     """Migration Processing Main Function - covering 'End to End' process."""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
@@ -2632,14 +2681,6 @@ def main_program():
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
-        
-        def get_new_status(old_status, old_issue_type):
-            global status_mappings
-            for n_status, o_statuses in status_mappings[old_issue_type].items():
-                for o_status in o_statuses:
-                    if old_status.upper() == o_status.upper():
-                        return n_status
-            return None
         
         if key in already_processed_json_importer_issues:
             return (0, key)
@@ -2662,13 +2703,12 @@ def main_program():
                 except:
                     print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file. Default status would be used.".format(old_issue.fields.status.name, issue_type))
                 
-                if new_issue_type in sub_tasks.keys():
-                    parent_field = old_issue.fields.parent
-                    parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
-                
                 try:
                     new_issue = jira_new.issue(new_issue_key, expand="changelog")
-                
+                    if new_issue_type in sub_tasks.keys():
+                        status = migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
+                    else:
+                        status = migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                 except:
                     if new_issue_type in sub_tasks.keys():
                         status = migrate_change_history(old_issue, new_issue_type, new_status, new=True, subtask=True)
@@ -2703,13 +2743,18 @@ def main_program():
     def find_min_id(key, jira, project):
         jql_max = 'project = {} order by key DESC'.format(project)
         max_processing_key = jira.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
+        jql_min = 'project = {} order by key ASC'.format(project)
+        min_processing_key = jira.search_issues(jql_str=jql_min, maxResults=1, json_result=False)[0].key
+        
+        if key.split('-')[1] < min_processing_key.split('-')[1]:
+            key = min_processing_key
         
         try:
             min_issue = jira.issue(key)
             if project in min_issue.key:
                 return key
             else:
-                key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) - 1)
+                key = key.split('-')[0] + '-' + str(int(key.split('-')[1]) + 1)
                 if int(key.split('-')[1]) > int(max_processing_key.split('-')[1]):
                     print("", "[ERROR] Max issue available is: '{}'. Start issue id is higher than max key.".format(max_processing_key), "", sep='\n')
                     os.system("pause")
@@ -2901,22 +2946,24 @@ def main_program():
         create_temp_folder(temp_dir_name)
     
     # Check Global Admin Access
-    data = {"projects": [{"key": project_new}]}
-    url = JIRA_BASE_URL_NEW + JIRA_imported_api
-    try:
-        r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
-        if str(r.status_code) not in ['202', '409']:
+    if json_importer_flag == 1:
+        data = {"projects": [{"key": project_new}]}
+        url = JIRA_BASE_URL_NEW + JIRA_imported_api
+        try:
+            r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
+            if str(r.status_code) not in ['202', '409']:
+                json_importer_flag = 0
+                multiple_json_data_processing = 1
+                print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.", sep='\n')
+            else:
+                print("[INFO] Global Admin access check for Target Project has been successfully validated.")
+        except:
             json_importer_flag = 0
-            print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.", sep='\n')
-        else:
-            print("[INFO] Global Admin access check for Target Project has been successfully validated.")
-    except:
-        json_importer_flag = 0
-        print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.")
+            print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.")
     
     # Sprints migration check
     start_issues_time = time.time()
-    if migrate_sprints_check == 1 and json_importer_flag == 0:
+    if migrate_sprints_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0:
         start_sprints_time = time.time()
         if old_board_id == 0:
             migrate_sprints(proj_old=project_old, project=project_new, name=default_board_name)
@@ -2959,7 +3006,7 @@ def main_program():
         print('[INFO] The list of migrated issues by type:', items_lst)
     
     # Creating missing Dummy issues
-    if json_importer_flag == 0:
+    if json_importer_flag == 0 and multiple_json_data_processing == 0:
         start_dummy_time = time.time()
         jql_max_new = 'project = {} order by key desc'.format(project_new)
         try:
@@ -2986,19 +3033,28 @@ def main_program():
         print("[END] Agile Board has been processed.", "", sep='\n')
     
     # Creating JSON file for importing data
-    if json_importer_flag == 1 and multiple_json_data_processing == 1:
+    if multiple_json_data_processing == 1:
         start_placeholders_time = time.time()
-        print("[START] Placeholders for issues will be created.")
+        print("[START] JSON Importer file(s) will be created.")
+        processed = 0
+        level = 0
         for i in range(4):
             for k, v in issuetypes_mappings.items():
                 if v['hierarchy'] == str(i):
-                    for type in issuetypes_mappings[k]['issuetypes']:
-                        if type in items_lst.keys():
-                            total_processed += len(items_lst[type])
+                    for i_type in issuetypes_mappings[k]['issuetypes']:
+                        if i_type in items_lst.keys():
+                            processed += len(items_lst[i_type])
+                            if level < i:
+                                total_processed = processed
+                                level = i
+                            if processed == number_of_migrated:
+                                total_processed = processed
                             max_retries = default_max_retries
-                            threads_processing(json_process_issue, items_lst[type])
-        print("[INFO] Placeholders for issues have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time), '', sep='\n')
-        multiple_json_data_processing = 0
+                            threads_processing(json_process_issue, items_lst[i_type])
+        print("[INFO] JSON Importer file(s) have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time), '', sep='\n')
+        print("[INFO] Please process JSON files - incrementally all parts in JIRA 'System -> External System Import -> JSON' and continue migration process.", '', sep='\n')
+        os.system("pause")
+        print("[INFO] Migration process will be continued.", '', sep='\n')
     
     for i in range(4):
         for k, v in issuetypes_mappings.items():
@@ -3039,7 +3095,7 @@ def main_program():
         print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints), '', sep='\n')
     
     # Delete issues with Summary = 'Dummy Issue'
-    if json_importer_flag == 0:
+    if json_importer_flag == 0 and multiple_json_data_processing == 0:
         start_delete_time = time.time()
         delete_extra_issues(max_id)
         print("[INFO] Dummy issues have been deleted/skipped in '{}' seconds.".format(time.time() - start_delete_time), '', sep='\n')
@@ -3086,11 +3142,12 @@ def overwrite_popup():
 def change_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
     global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
-    global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads
+    global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads, pool_size
     
     def config_save():
         global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
+        global pool_size
         
         validation_error = 0
         
@@ -3105,6 +3162,7 @@ def change_configs():
         old_board_id = old_board.get()
         team_project_prefix = new_teams.get()
         threads = threads_num.get().strip()
+        pool_size = process_num.get().strip()
         last_updated_date = last_updated.get().strip()
         
         if last_updated_date == 'YYYY-MM-DD':
@@ -3212,6 +3270,12 @@ def change_configs():
             print("[ERROR] Parallel Threads number is invalid. Default '1' will be used.")
             threads = 1
         
+        try:
+            pool_size = int(pool_size.strip())
+        except:
+            print("[ERROR] Number of processes is invalid. Default '1' will be used.")
+            pool_size = 1
+        
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         save_config()
@@ -3225,6 +3289,7 @@ def change_configs():
         """ This function required for fixing same valu duplication issue for second Tk window """
         global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
+        global pool_size
         
         fields = {"JIRA_BASE_URL_OLD": JIRA_BASE_URL_OLD,
                   "project_old": project_old,
@@ -3238,6 +3303,7 @@ def change_configs():
                   "validation_error": validation_error,
                   "last_updated_date": last_updated_date,
                   "threads": threads,
+                  "pool_size": pool_size,
                   }
         for f, v in fields.items():
             if str(value) == str(v) and field != f:
@@ -3326,21 +3392,29 @@ def change_configs():
     threads_num.delete(0, END)
     threads_num.insert(0, threads)
     threads_num.grid(row=6, column=4, columnspan=1, padx=8)
+
+    pool_size = check_similar("pool_size", pool_size)
+    
+    tk.Label(config_popup, text="Number Processes:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=7, column=3)
+    process_num = tk.Entry(config_popup, width=10, textvariable=pool_size)
+    process_num.delete(0, END)
+    process_num.insert(0, pool_size)
+    process_num.grid(row=7, column=4, columnspan=1, padx=8)
     
     if last_updated_date == '':
         last_updated_date = 'YYYY-MM-DD'
     
     last_updated_date = check_similar("last_updated_date", last_updated_date)
     
-    tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=7, column=0, columnspan=4)
+    tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=8, column=0, columnspan=4)
     last_updated = tk.Entry(config_popup, width=15, textvariable=last_updated_date)
     last_updated.insert(END, last_updated_date)
-    last_updated.grid(row=7, column=3, columnspan=2, padx=70, stick=W)
+    last_updated.grid(row=8, column=3, columnspan=2, padx=70, stick=W)
     
-    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=8, columnspan=5)
+    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=9, columnspan=5)
     
-    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=9, column=0, pady=8, padx=20, sticky=W, columnspan=3)
-    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=9, column=2, pady=8, padx=20, sticky=E, columnspan=3)
+    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=20, sticky=W, columnspan=3)
+    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=2, pady=8, padx=20, sticky=E, columnspan=3)
     
     tk.mainloop()
 
