@@ -22,7 +22,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.5'
+current_version = '1.6'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -39,6 +39,8 @@ JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
+
+# Disabling WARNINGS - hide them from console. All warnings will be covered by program itself.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 urllib3.disable_warnings(urllib3.exceptions.HTTPWarning)
 urllib3.disable_warnings(urllib3.exceptions.ConnectionError)
@@ -2262,6 +2264,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     old_value = [item.name for item in old_value]
                 elif issue_details_old[old_issuetype][field]['custom type'] in ['multicheckboxes'] and old_value is not None:
                     old_value = [item.value for item in old_value]
+                elif issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
+                    old_value = str(old_value).replace(' ', '_')
             elif issue_details_old[old_issuetype][field]['type'] in ['option', 'user']:
                 try:
                     old_value = value.value
@@ -2323,11 +2327,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         if new_field != 'Labels':
                             concatenated_value = []
                         else:
-                            concatenated_value = data_val['labels']
+                            if data_val['labels'] is None:
+                                concatenated_value = []
+                            else:
+                                concatenated_value = data_val['labels']
                     if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
-                        concatenated_value.append('' if get_value(o_field) is None else get_value(o_field).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                        concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
                     else:
-                        concatenated_value.append('' if get_value(o_field) is None else get_value(o_field))
+                        concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)))
+                else:
+                    value = str(get_value(o_field))
+                    if value != '':
+                        return value
             value = concatenated_value
         else:
             value = get_value(old_field[0])
@@ -2505,17 +2516,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         data_val['components'] = []
     
     # Post-processing for OLD Components / Versions with spaces in the very beginning
-    if 'versions' in data_val.keys() and data_val['versions'] != []:
+    if 'versions' in data_val.keys() and data_val['versions'] != [] and data_val['versions'] is not None:
         temp_versions = []
         for version in data_val['versions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['versions'] = temp_versions
-    if 'fixVersions' in data_val.keys() and data_val['fixVersions'] != []:
+    if 'fixVersions' in data_val.keys() and data_val['fixVersions'] != [] and data_val['fixVersions'] is not None:
         temp_versions = []
         for version in data_val['fixVersions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['fixVersions'] = temp_versions
-    if 'components' in data_val.keys() and data_val['components'] != []:
+    if 'components' in data_val.keys() and data_val['components'] != [] and data_val['fixVersions'] is not None:
         temp_components = []
         for component in data_val['components']:
             temp_components.append({'name': component['name'].strip()})
@@ -2546,6 +2557,21 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     # Post-processing for Labels
     if json_importer_flag == 1 and 'labels' not in data_val.keys():
         data_val['labels'] = []
+    try:
+        new_labels = []
+        if 'labels' in data_val.keys():
+            for label in data_val['labels']:
+                new_labels.append(label.replace(' ', '_'))
+        data_val['labels'] = new_labels
+    except:
+        pass
+    
+    # Post-processing for Epic Name
+    try:
+        if issue_details_new[issuetype]['Epic Name']['id'] in data_val.keys() and data_val[issue_details_new[issuetype]['Epic Name']['id']] is None:
+            data_val[issue_details_new[issuetype]['Epic Name']['id']] = data_val['summary']
+    except:
+        pass
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
@@ -2639,10 +2665,8 @@ def generate_template():
 
 
 def threads_processing(function, items):
-    global threads, max_retries, pool_size
+    global threads, max_retries
     
-    if pool_size > 1:
-        get_jira_connection()
     items_for_retry = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(function, i) for i in items}
@@ -2954,12 +2978,12 @@ def main_program():
             if str(r.status_code) not in ['202', '409']:
                 json_importer_flag = 0
                 multiple_json_data_processing = 1
-                print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.", sep='\n')
+                print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
             else:
-                print("[INFO] Global Admin access check for Target Project has been successfully validated.")
+                print("[INFO] Global Admin access check for Target Project has been successfully validated." "", sep='\n')
         except:
             json_importer_flag = 0
-            print("[ERROR] No Global Admin Rights for Target Project. Change History would not be migrated.")
+            print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created." "", sep='\n')
     
     # Sprints migration check
     start_issues_time = time.time()
