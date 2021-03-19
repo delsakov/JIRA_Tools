@@ -2913,10 +2913,11 @@ def main_program():
         max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
         start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
         dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
+        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} ".format(project_old, start_jira_key, max_processing_key)
         jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
                            "issueFunction in subtasksOf(\"{}\") OR " \
                            "issueFunction in parentsOf(\"{}\") OR " \
-                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql, dependencies_jql)
+                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql_parents, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
     
     # Check already migrated issues
@@ -3000,10 +3001,10 @@ def main_program():
                 multiple_json_data_processing = 1
                 print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
             else:
-                print("[INFO] Global Admin access check for Target Project has been successfully validated." "", sep='\n')
+                print("[INFO] Global Admin access check for Target Project has been successfully validated.", "", sep='\n')
         except:
             json_importer_flag = 0
-            print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created." "", sep='\n')
+            print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
     
     # Sprints migration check
     start_issues_time = time.time()
@@ -3017,10 +3018,9 @@ def main_program():
             print("[INFO] Sprints migrated in '{}' seconds.".format(time.time() - start_sprints_time), '', sep='\n')
     else:
         if limit_migration_data != 0:
-            if start_jira_key != max_id:
-                jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
-            else:
-                jql_details = 'project = {} AND key >= {} AND key <= {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+            jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
+            if start_jira_key == max_id:
+                jql_details = jql_details.replace('<', '<=')
         else:
             jql_details = 'project = {} AND key >= {} {} order by key ASC'.format(project_old, start_jira_key, recently_updated)
         get_issues_by_jql(jira_old, jql=jql_details, types=True)
