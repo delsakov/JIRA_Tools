@@ -2284,7 +2284,16 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if issuetype in sub_tasks.keys():
                     return None
                 else:
-                    team = '' if value is None else get_team_id(value[0])
+                    try:
+                        team_value = value[0]
+                        if type(team_value) != str:
+                            try:
+                                team_value = value[0].value
+                            except:
+                                team_value = value[0].name
+                    except:
+                        value = None
+                    team = '' if value is None else get_team_id(team_value)
                     return team
             else:
                 return get_new_value_from_mapping(old_value, new_field)
@@ -2568,7 +2577,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if 'labels' in data_val.keys():
             for label in data_val['labels']:
                 new_labels.append(label.replace(' ', '_'))
-        data_val['labels'] = new_labels
+        new_labels = set(new_labels)
+        try:
+            new_labels.remove(' ')
+        except:
+            pass
+        data_val['labels'] = list(new_labels)
     except:
         pass
     
