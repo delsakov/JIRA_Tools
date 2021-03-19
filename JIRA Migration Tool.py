@@ -5,6 +5,7 @@ from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
 from sys import exit
+import objsize
 from tkinter import *
 from tkinter.filedialog import askopenfilename
 import tkinter as tk
@@ -144,6 +145,7 @@ already_processed_json_importer_issues = set()
 already_processed_users = set()
 skipped_issuetypes = []
 total_processed = 0
+size = 0
 pool_size = 1
 
 # Concurrent processing configs
@@ -1808,7 +1810,7 @@ def save_config(message=True):
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
-    global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues
+    global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed
     
     def update_issues_json(data):
@@ -1816,7 +1818,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         
         filename = 'JSON_Importer_' + project_new + '_PART_' + str(json_file_part_num) + '.json'
         json_file_part_num += 1
-
+        
         try:
             with open(filename, 'w') as outfile:
                 json.dump(data, outfile)
@@ -1867,6 +1869,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     existed_comments = []
     url = JIRA_BASE_URL_NEW + JIRA_imported_api
     data = {}
+    processing_data = {}
     data["projects"] = []
     project_issue = {}
     project_details = {}
@@ -2017,7 +2020,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                     sprint_detail["completeDate"] = complete_date
                     sprint_detail["name"] = name
                     sprints.append(sprint_detail)
-            project_issue["customFieldValues"] = [{"fieldName": "Sprint", "fieldType": "com.pyxis.greenhopper.jira:gh-sprint", "value": sprints}]
+                project_issue["customFieldValues"] = [{"fieldName": "Sprint", "fieldType": "com.pyxis.greenhopper.jira:gh-sprint", "value": sprints}]
         except:
             pass
     
@@ -2081,17 +2084,20 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         data["users"] = users
     
     if multiple_json_data_processing == 1 and old_issue.key.replace(project_old, project_new) not in already_processed_json_importer_issues:
+        already_processed_json_importer_issues.add(old_issue.key.replace(project_old, project_new))
         total_data["projects"][0]["issues"].append(project_issue)
         total_data["users"].extend(data["users"])
+        size += objsize.get_deep_size(project_issue) / 1024
+        size += objsize.get_deep_size(data["users"]) / 1024
         if len(already_processed_json_importer_issues) > 0:
-            if len(already_processed_json_importer_issues) % 5000 == 0:
-                print("[INFO] Processed '{}' issues so far.".format(len(already_processed_json_importer_issues)))
-            if len(already_processed_json_importer_issues) % 1000 == 0 or len(already_processed_json_importer_issues) + 1 == total_processed:
+            if len(already_processed_json_importer_issues) % 1000 == 0:
+                print("[INFO] Processed '{}' out of '{}' issues so far.".format(len(already_processed_json_importer_issues), total_processed))
+            if size > 23000 or len(already_processed_json_importer_issues) == total_processed:
                 update_issues_json(total_data)
                 total_data = {}
                 total_data["projects"] = [{"key": project_new, "issues": []}]
                 total_data["users"] = []
-        already_processed_json_importer_issues.add(old_issue.key.replace(project_old, project_new))
+                size = 0
         return 202
     if json_importer_flag == 1:
         try:
@@ -2526,7 +2532,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         for version in data_val['fixVersions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['fixVersions'] = temp_versions
-    if 'components' in data_val.keys() and data_val['components'] != [] and data_val['fixVersions'] is not None:
+    if 'components' in data_val.keys() and data_val['components'] != []:
         temp_components = []
         for component in data_val['components']:
             temp_components.append({'name': component['name'].strip()})
@@ -3060,21 +3066,17 @@ def main_program():
     if multiple_json_data_processing == 1:
         start_placeholders_time = time.time()
         print("[START] JSON Importer file(s) will be created.")
-        processed = 0
-        level = 0
+        total_processed = number_of_migrated
         for i in range(4):
             for k, v in issuetypes_mappings.items():
                 if v['hierarchy'] == str(i):
                     for i_type in issuetypes_mappings[k]['issuetypes']:
                         if i_type in items_lst.keys():
-                            processed += len(items_lst[i_type])
-                            if level < i:
-                                total_processed = processed
-                                level = i
-                            if processed == number_of_migrated:
-                                total_processed = processed
-                            max_retries = default_max_retries
-                            threads_processing(json_process_issue, items_lst[i_type])
+                            for issue in items_lst[i_type]:
+                                json_process_issue(issue)
+                            # max_retries = default_max_retries
+                            # threads_processing(json_process_issue, items_lst[i_type])
+                            
         print("[INFO] JSON Importer file(s) have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time), '', sep='\n')
         print("[INFO] Please process JSON files - incrementally all parts in JIRA 'System -> External System Import -> JSON' and continue migration process.", '', sep='\n')
         os.system("pause")
