@@ -23,7 +23,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.6'
+current_version = '1.7'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -2682,9 +2682,7 @@ def generate_template():
     else:
         mapping_file = mapping_file.split('.xls')[0] + '.xlsx'
     main.destroy()
-    if project_old == '' or project_new == '' or JIRA_BASE_URL_NEW == '' or JIRA_BASE_URL_OLD == '':
-        print("[WARNING] Missing configuration parameters. Please enter missing configuration parameters in the new window.")
-        change_configs()
+    change_mappings_configs()
     if len(username) < 3 or len(password) < 3:
         print('[WARNING] JIRA credentials missing. Please enter them on new window.')
         jira_authorization_popup()
@@ -3216,20 +3214,14 @@ def overwrite_popup():
 
 def change_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
-    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
+    global start_jira_key, limit_migration_data
     global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads, pool_size
     
     def config_save():
-        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
+        global start_jira_key, limit_migration_data, pool_size
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
-        global pool_size
         
         validation_error = 0
-        
-        JIRA_BASE_URL_OLD = source_jira.get()
-        JIRA_BASE_URL_NEW = target_jira.get()
-        project_old = source_project.get()
-        project_new = target_project.get()
         
         start_jira_key = first_issue.get()
         limit_migration_data = migrated_number.get()
@@ -3244,53 +3236,6 @@ def change_configs():
             last_updated_date = ''
         
         config_popup.destroy()
-        
-        try:
-            JIRA_BASE_URL_OLD = str(JIRA_BASE_URL_OLD).strip('/').strip()
-        except:
-            if JIRA_BASE_URL_OLD == '':
-                print("[ERROR] Source JIRA URL is empty.")
-            else:
-                print("[ERROR] Source JIRA URL is invalid.")
-            validation_error = 1
-        if JIRA_BASE_URL_OLD == '':
-            print("[ERROR] Source JIRA URL is empty.")
-            validation_error = 1
-        
-        try:
-            JIRA_BASE_URL_NEW = str(JIRA_BASE_URL_NEW).strip('/').strip()
-        except:
-            if JIRA_BASE_URL_NEW == '':
-                print("[ERROR] Target JIRA URL is empty.")
-            else:
-                print("[ERROR] Target JIRA URL is invalid.")
-            validation_error = 1
-        if JIRA_BASE_URL_NEW == '':
-            print("[ERROR] Target JIRA URL is empty.")
-            validation_error = 1
-        
-        try:
-            project_old = str(project_old).strip()
-        except:
-            if project_old == '':
-                print("[ERROR] Source JIRA Project Key is empty.")
-            else:
-                print("[ERROR] Source JIRA Project Key is invalid.")
-            validation_error = 1
-        if project_old == '':
-            print("[ERROR] Source JIRA Project Key is empty.")
-        
-        try:
-            project_new = str(project_new).strip()
-        except:
-            if project_new == '':
-                print("[ERROR] Target JIRA Project Key is empty.")
-            else:
-                print("[ERROR] Target JIRA Project Key is invalid.")
-            validation_error = 1
-        if project_new == '':
-            print("[ERROR] Target JIRA Project Key is empty.")
-            validation_error = 1
         
         if start_jira_key == '':
             start_jira_key = 1
@@ -3362,15 +3307,10 @@ def change_configs():
     
     def check_similar(field, value):
         """ This function required for fixing same valu duplication issue for second Tk window """
-        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, start_jira_key, limit_migration_data
-        global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
-        global pool_size
+        global start_jira_key, limit_migration_data, pool_size, default_board_name, old_board_id
+        global team_project_prefix, validation_error, last_updated_date, threads
         
-        fields = {"JIRA_BASE_URL_OLD": JIRA_BASE_URL_OLD,
-                  "project_old": project_old,
-                  "JIRA_BASE_URL_NEW": JIRA_BASE_URL_NEW,
-                  "project_new": project_new,
-                  "start_jira_key": start_jira_key,
+        fields = {"start_jira_key": start_jira_key,
                   "limit_migration_data": limit_migration_data,
                   "default_board_name": default_board_name,
                   "old_board_id": old_board_id,
@@ -3389,37 +3329,7 @@ def change_configs():
     config_popup = tk.Tk()
     config_popup.title("JIRA Migration Tool - Configuration")
     
-    JIRA_BASE_URL_OLD = check_similar("JIRA_BASE_URL_OLD", JIRA_BASE_URL_OLD)
-    
-    tk.Label(config_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=0, rowspan=1)
-    source_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_OLD)
-    source_jira.insert(END, JIRA_BASE_URL_OLD)
-    source_jira.grid(row=0, column=1, columnspan=2, padx=8)
-    
-    project_old = check_similar("project_old", project_old)
-    
-    tk.Label(config_popup, text="Source Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=0, column=3, rowspan=1)
-    source_project = tk.Entry(config_popup, width=16, textvariable=project_old)
-    source_project.insert(END, project_old)
-    source_project.grid(row=0, column=3, columnspan=2, padx=7, stick=E)
-    
-    JIRA_BASE_URL_NEW = check_similar("JIRA_BASE_URL_NEW", JIRA_BASE_URL_NEW)
-    
-    tk.Label(config_popup, text="Target JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=1, column=0, rowspan=1)
-    target_jira = tk.Entry(config_popup, width=45, textvariable=JIRA_BASE_URL_NEW)
-    target_jira.insert(END, JIRA_BASE_URL_NEW)
-    target_jira.grid(row=1, column=1, columnspan=2, padx=8)
-    
-    project_new = check_similar("project_new", project_new)
-    
-    tk.Label(config_popup, text="Target Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=3, rowspan=1)
-    target_project = tk.Entry(config_popup, width=16, textvariable=project_new)
-    target_project.insert(END, project_new)
-    target_project.grid(row=1, column=3, columnspan=2, padx=7, stick=E)
-    
-    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=2, columnspan=5)
-    
-    tk.Label(config_popup, text="Detailed Configuration for migration. Defaults are '0' or empty for ALL Sprints / Issues:", foreground="black", font=("Helvetica", 11, "italic"), padx=10, wraplength=500).grid(row=3, column=0, columnspan=5)
+    tk.Label(config_popup, text="Detailed Configuration for migration. Defaults are '0' or empty for ALL Sprints / Issues:", foreground="black", font=("Helvetica", 11, "italic"), padx=10, pady=10, wraplength=600).grid(row=3, column=0, columnspan=5)
     
     start_jira_key = check_similar("start_jira_key", start_jira_key)
     
@@ -3490,6 +3400,131 @@ def change_configs():
     
     tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=20, sticky=W, columnspan=3)
     tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=2, pady=8, padx=20, sticky=E, columnspan=3)
+    
+    tk.mainloop()
+
+
+def change_mappings_configs():
+    """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
+    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+    
+    def config_save():
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+        
+        validation_error = 0
+        
+        JIRA_BASE_URL_OLD = source_jira.get()
+        JIRA_BASE_URL_NEW = target_jira.get()
+        project_old = source_project.get()
+        project_new = target_project.get()
+        
+        config_mapping_popup.destroy()
+        
+        try:
+            JIRA_BASE_URL_OLD = str(JIRA_BASE_URL_OLD).strip('/').strip()
+        except:
+            if JIRA_BASE_URL_OLD == '':
+                print("[ERROR] Source JIRA URL is empty.")
+            else:
+                print("[ERROR] Source JIRA URL is invalid.")
+            validation_error = 1
+        if JIRA_BASE_URL_OLD == '':
+            print("[ERROR] Source JIRA URL is empty.")
+            validation_error = 1
+        
+        try:
+            JIRA_BASE_URL_NEW = str(JIRA_BASE_URL_NEW).strip('/').strip()
+        except:
+            if JIRA_BASE_URL_NEW == '':
+                print("[ERROR] Target JIRA URL is empty.")
+            else:
+                print("[ERROR] Target JIRA URL is invalid.")
+            validation_error = 1
+        if JIRA_BASE_URL_NEW == '':
+            print("[ERROR] Target JIRA URL is empty.")
+            validation_error = 1
+        
+        try:
+            project_old = str(project_old).strip()
+        except:
+            if project_old == '':
+                print("[ERROR] Source JIRA Project Key is empty.")
+            else:
+                print("[ERROR] Source JIRA Project Key is invalid.")
+            validation_error = 1
+        if project_old == '':
+            print("[ERROR] Source JIRA Project Key is empty.")
+        
+        try:
+            project_new = str(project_new).strip()
+        except:
+            print("[ERROR] Target JIRA Project Key is invalid.")
+            validation_error = 1
+        if project_new == '':
+            print("[WARNING] Target JIRA Project Key is empty. Would be used same as Sourse.")
+            project_new = project_old
+            
+        if validation_error == 1:
+            print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
+        save_config()
+        config_mapping_popup.quit()
+    
+    def config_mapping_popup_close():
+        config_mapping_popup.destroy()
+        config_mapping_popup.quit()
+    
+    def check_similar(field, value):
+        """ This function required for fixing same valu duplication issue for second Tk window """
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+        
+        fields = {"JIRA_BASE_URL_OLD": JIRA_BASE_URL_OLD,
+                  "project_old": project_old,
+                  "JIRA_BASE_URL_NEW": JIRA_BASE_URL_NEW,
+                  "project_new": project_new,
+                  }
+        for f, v in fields.items():
+            if str(value) == str(v) and field != f:
+                return check_similar(field, ' ' + str(value))
+        else:
+            return value
+
+    config_mapping_popup = tk.Tk()
+    config_mapping_popup.title("JIRA Migration Tool - Configuration for Mapping Generation.")
+    
+    JIRA_BASE_URL_OLD = check_similar("JIRA_BASE_URL_OLD", JIRA_BASE_URL_OLD)
+    
+    tk.Label(config_mapping_popup, text="Please enter Source and Target project for migration (Target Project Key will be same, if empty):", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=0, column=0, columnspan=4, rowspan=1, sticky=W, padx=60)
+
+    tk.Label(config_mapping_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=0, rowspan=1)
+    source_jira = tk.Entry(config_mapping_popup, width=60, textvariable=JIRA_BASE_URL_OLD)
+    source_jira.insert(END, JIRA_BASE_URL_OLD)
+    source_jira.grid(row=1, column=1, padx=8)
+    
+    project_old = check_similar("project_old", project_old)
+    
+    tk.Label(config_mapping_popup, text="Source Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=2, rowspan=1, stick=W)
+    source_project = tk.Entry(config_mapping_popup, width=20, textvariable=project_old)
+    source_project.insert(END, project_old)
+    source_project.grid(row=1, column=3, padx=7, stick=E)
+    
+    JIRA_BASE_URL_NEW = check_similar("JIRA_BASE_URL_NEW", JIRA_BASE_URL_NEW)
+    
+    tk.Label(config_mapping_popup, text="Target JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=2, column=0, rowspan=1)
+    target_jira = tk.Entry(config_mapping_popup, width=60, textvariable=JIRA_BASE_URL_NEW)
+    target_jira.insert(END, JIRA_BASE_URL_NEW)
+    target_jira.grid(row=2, column=1, padx=8)
+    
+    project_new = check_similar("project_new", project_new)
+    
+    tk.Label(config_mapping_popup, text="Target Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=2, column=2, rowspan=1, stick=W)
+    target_project = tk.Entry(config_mapping_popup, width=20, textvariable=project_new)
+    target_project.insert(END, project_new)
+    target_project.grid(row=2, column=3, padx=7, stick=E)
+    
+    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=3, columnspan=4)
+    
+    tk.Button(config_mapping_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_mapping_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=W, columnspan=4)
+    tk.Button(config_mapping_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=E, columnspan=4)
     
     tk.mainloop()
 
@@ -3646,7 +3681,7 @@ if __name__ == "__main__":
     
     tk.Label(main, text="Mapping Template Generation", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=0, column=0, columnspan=2, rowspan=2, sticky=W, padx=80)
     tk.Label(main, text="Step 1", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=0, column=0, columnspan=3, rowspan=2, sticky=W, padx=15)
-    tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=0, rowspan=2)
+    tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=5, rowspan=2, sticky=N)
     
     tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=2, columnspan=4)
     
