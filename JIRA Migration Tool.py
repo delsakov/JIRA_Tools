@@ -38,6 +38,7 @@ JIRA_sprint_api = '/rest/agile/1.0/sprint/'
 JIRA_core_api = '/rest/api/2/issue/'
 JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
+JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
 
@@ -707,7 +708,7 @@ def get_jira_connection():
             print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
             os.system("pause")
             exit()
-        if create_remote_link_for_old_issue == 1:
+        if create_remote_link_for_old_issue == 1 or migrate_attachments_check == 1:
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
     except Exception as e:
         print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
@@ -1059,7 +1060,7 @@ def migrate_links(old_issue, new_issue):
                     pass
 
 def migrate_attachments(old_issue, new_issue):
-    global temp_dir_name
+    global temp_dir_name, jira_old, JIRA_attachment_api, atlassian_jira_old
     new_attachments = []
     if new_issue.fields.attachment:
         for new_attachment in new_issue.fields.attachment:
@@ -1078,8 +1079,44 @@ def migrate_attachments(old_issue, new_issue):
                         jira_new.add_attachment(new_issue.key, file_new, filename)
                     if os.path.exists(full_name):
                         os.remove(full_name)
-    except Exception as e:
-        print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
+    except:
+        try:
+            attachments = {}
+            old_issue_full = jira_old.issue(old_issue.key, expand='changelog')
+            for log in old_issue_full.raw['changelog']['histories']:
+                for item in log['items']:
+                    if item["field"] == "Attachment":
+                        if item["to"] is not None:
+                            if item["to"] in attachments.keys() and (("added" in attachments[item["to"]] and log["created"] > attachments[item["to"]]["added"]) or "added" not in attachments[item["to"]]):
+                                attachments[item["to"]]["added"] = log["created"]
+                            else:
+                                attachments[item["to"]] = {}
+                                attachments[item["to"]]["added"] = log["created"]
+                                attachments[item["to"]]["name"] = item["toString"]
+                        else:
+                            if item["from"] in attachments.keys() and (("removed" in attachments[item["from"]] and log["created"] > attachments[item["from"]]["removed"]) or "removed" not in attachments[item["from"]]):
+                                attachments[item["from"]]["removed"] = log["created"]
+                            else:
+                                attachments[item["from"]] = {}
+                                attachments[item["from"]]["removed"] = log["created"]
+                                attachments[item["from"]]["name"] = item["fromString"]
+            
+            for k, v in attachments.items():
+                if "added" in v.keys() and v["name"] not in new_attachments and ("removed" not in v.keys() or ("removed" in v.keys() and v["added"] > v["removed"])):
+                    attachment = atlassian_jira_old.get_attachment(k)
+                    file_url = attachment["content"]
+                    r = requests.get(file_url, allow_redirects=True)
+                    filename = attachment["filename"]
+                    temp_name = 'temp_' + k
+                    full_name = os.path.join(temp_dir_name, temp_name)
+                    with open(full_name, 'wb') as f:
+                        f.write(r.content)
+                    with open(full_name, 'rb') as file_new:
+                        jira_new.add_attachment(new_issue.key, file_new, filename)
+                    if os.path.exists(full_name):
+                        os.remove(full_name)
+        except Exception as e:
+                    print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
 
 
 def migrate_status(new_issue, old_issue):
@@ -3088,8 +3125,6 @@ def main_program():
                         if i_type in items_lst.keys():
                             for issue in items_lst[i_type]:
                                 json_process_issue(issue)
-                            # max_retries = default_max_retries
-                            # threads_processing(json_process_issue, items_lst[i_type])
                             
         print("[INFO] JSON Importer file(s) have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time), '', sep='\n')
         print("[INFO] Please process JSON files - incrementally all parts in JIRA 'System -> External System Import -> JSON' and continue migration process.", '', sep='\n')
