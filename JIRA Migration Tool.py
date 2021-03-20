@@ -375,7 +375,7 @@ def get_hierarchy_config():
             else:
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
         except:
-            print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details['issuetypes'], issuetype))
+            print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details['issuetypes'], issuetype), "", sep='\n')
             skipped_issuetypes.extend(details['issuetypes'])
     
     # Removing non-mapped items
@@ -3109,7 +3109,7 @@ def main_program():
     if new_board_id == 0 and migrate_sprints_check == 1:
         print("[START] Agile Board processing for Sprints.")
         get_new_board_id()
-        print("[END] Agile Board has been processed.", "", sep='\n')
+        print("[END] Agile Board has been found / created.", "", sep='\n')
     
     # Creating JSON file for importing data
     if multiple_json_data_processing == 1:
