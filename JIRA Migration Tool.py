@@ -42,6 +42,7 @@ JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
 JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
+JIRA_labelit_api = '/rest/labelit/1.0/items'
 JIRA_create_project_api = '/rest/scriptrunner/latest/custom/createProject'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
 
@@ -385,29 +386,30 @@ def get_hierarchy_config():
     issuetypes_mappings.pop("", None)
 
 
+def calculate_statuses(transitions):
+    issuetypes_lst = []
+    issuetype_statuses = {}
+    for k, v in transitions.items():
+        statuses_lst = []
+        issuetypes_lst.append(k)
+        for l in v:
+            statuses_lst.append(l[0])
+            statuses_lst.append(l[2])
+        issuetype_statuses[k] = list(set(statuses_lst))
+    statuses_lst = []
+    for k, v in issuetype_statuses.items():
+        for status in v:
+            statuses_lst.append([k, status, ''])
+    return statuses_lst, list(set(issuetypes_lst))
+
+
 def prepare_template_data():
     global old_transitions, new_transitions, issue_details_old, default_validation, jira_system_fields
-    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, migrate_statuses_check
+    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, migrate_statuses_check, json_importer_flag
     global additional_mapping_fields
     
     template_excel = {}
     old_statuses, new_statuses, old_issuetypes, new_issuetypes = ([], [], [], [])
-    
-    def calculate_statuses(transitions):
-        issuetypes_lst = []
-        issuetype_statuses = {}
-        for k, v in transitions.items():
-            statuses_lst = []
-            issuetypes_lst.append(k)
-            for l in v:
-                statuses_lst.append(l[0])
-                statuses_lst.append(l[2])
-            issuetype_statuses[k] = list(set(statuses_lst))
-        statuses_lst = []
-        for k, v in issuetype_statuses.items():
-            for status in v:
-                statuses_lst.append([k, status, ''])
-        return statuses_lst, list(set(issuetypes_lst))
     
     # Project details
     project_details = [['Source Project JIRA URL', 'Source Project JIRA Key', 'Target Project JIRA URL', 'Target Project JIRA Key', 'Template type']]
@@ -787,6 +789,42 @@ def get_team_id(team_name):
     return create_new_team()
 
 
+def get_lm_field_values(field_name, type):
+    global JIRA_BASE_URL_NEW, JIRA_labelit_api, headers, verify, auth, project_new, issue_details_new
+
+    url = JIRA_BASE_URL_NEW + JIRA_labelit_api
+    proj = jira_new.project(project_new).id
+    field_id = issue_details_new[type][field_name]['id']
+    lm_data = ['labels']
+    offset = 0
+    labels = []
+    while len(lm_data) > 0:
+        data = {"customFieldId": field_id,
+                "projectId": proj,
+                "offset": offset}
+        r = requests.get(url, params=data, auth=auth, headers=headers, verify=verify)
+        lm_data = eval(r.content.decode('utf-8'))
+        offset += 1000
+        for l in lm_data:
+            labels.append(l["name"])
+    return labels
+    
+
+def add_lm_field_value(value, field_name, type):
+    global JIRA_BASE_URL_NEW, JIRA_labelit_api, headers, verify, auth, project_new, issue_details_new
+    
+    url = JIRA_BASE_URL_NEW + JIRA_labelit_api
+    proj = jira_new.project(project_new).id
+    field_id = issue_details_new[type][field_name]['id']
+    name = str(value).strip().replace(' ', '_').replace(',', '_').replace('?', '_')
+    body = {"name": name,
+            "customFieldId": field_id,
+            "projectId": proj}
+    r = requests.post(url, json=body, auth=auth, headers=headers, verify=verify)
+    if str(r.status_code) != '201':
+        print("[WARNING] Value '{}' can't be added into Label Manager field.".format(name))
+    
+
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
     global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth, max_retries
     global max_id, start_jira_key, headers, recently_updated, JIRA_BASE_URL_NEW, JIRA_sprint_api, default_max_retries
@@ -1067,7 +1105,11 @@ def migrate_attachments(old_issue, new_issue):
     new_attachments = []
     if new_issue.fields.attachment:
         for new_attachment in new_issue.fields.attachment:
-            new_attachments.append(new_attachment.filename)
+            try:
+                new_attachments.append(new_attachment.filename)
+            except:
+                pass
+    
     try:
         if old_issue.fields.attachment:
             for attachment in old_issue.fields.attachment:
@@ -1125,14 +1167,6 @@ def migrate_attachments(old_issue, new_issue):
 def migrate_status(new_issue, old_issue):
     global new_transitions
     
-    def get_new_status(old_status, issue_type):
-        global status_mappings
-        for n_status, o_statuses in status_mappings[issue_type].items():
-            for o_status in o_statuses:
-                if old_status.upper() == o_status.upper():
-                    return n_status
-        return None
-    
     def find_shortest_path(graph, start, end, path):
         path = path + [start]
         if start == end:
@@ -1148,6 +1182,7 @@ def migrate_status(new_issue, old_issue):
         return shortest
     
     resolution = None
+    new_issue_type = None
     issue_type = old_issue.fields.issuetype.name
     new_status = get_new_status(old_issue.fields.status.name, issue_type)
     old_status = new_issue.fields.status.name
@@ -1201,12 +1236,25 @@ def update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issu
     return status
 
 
-def get_new_status(old_status, old_issue_type):
+def get_new_status(old_status, old_issue_type, new_issue_type=None):
     global status_mappings
+    
+    def get_status(type, status):
+        global new_transitions
+        
+        new_statuses, new_issuetypes = ([], [])
+        new_statuses, new_issuetypes = calculate_statuses(new_transitions)
+        for l in new_statuses:
+            if l[0] == type and l[1] == status:
+                return status
+        return new_transitions[type][0]
+        
     for n_status, o_statuses in status_mappings[old_issue_type].items():
         for o_status in o_statuses:
-            if old_status.upper() == o_status.upper():
+            if old_status.upper() == o_status.upper() and n_status != '':
                 return n_status
+    if new_issue_type is not None:
+        return get_status(new_issue_type, old_status)
     return None
 
 
@@ -1239,9 +1287,12 @@ def process_issue(key):
             new_issue = jira_new.issue(new_issue_key, expand="changelog")
             if json_importer_flag == 1:
                 issue_type = old_issue.fields.issuetype.name
-                new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
                 if new_issue_type in sub_tasks.keys() and new_issue_type != new_issue.fields.issuetype.name:
-                    parent_field = old_issue.fields.parent
+                    try:
+                        parent_field = old_issue.fields.parent
+                    except:
+                        parent_field = None
                     parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
                     if parent is None:
                         try:
@@ -1264,11 +1315,14 @@ def process_issue(key):
                 parent = None
                 issue_type = old_issue.fields.issuetype.name
                 try:
-                    new_status = get_new_status(old_issue.fields.status.name, issue_type)
+                    new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
                 except:
                     print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
                 if new_issue_type in sub_tasks.keys():
-                    parent_field = old_issue.fields.parent
+                    try:
+                        parent_field = old_issue.fields.parent
+                    except:
+                        parent_field = None
                     parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
                     if parent is None:
                         try:
@@ -1422,7 +1476,7 @@ def load_file():
 
 def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
-    global jira_system_fields, additional_mapping_fields
+    global jira_system_fields, additional_mapping_fields, new_transitions
     try:
         wb.create_sheet(title)
     except:
@@ -2386,15 +2440,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     concatenated_value += 0 if get_value(o_field) is None else get_value(o_field)
                 elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
                     if concatenated_value is None:
-                        if new_field != 'Labels':
+                        if new_field != 'Labels' or (new_field == 'Labels' and data_val['labels'] is None):
                             concatenated_value = []
                         else:
-                            if data_val['labels'] is None:
-                                concatenated_value = []
-                            else:
-                                concatenated_value = data_val['labels']
+                            concatenated_value = data_val['labels']
                     if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
                         concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                    elif issue_details_new[new_issuetype][new_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
+                        value = str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_')
+                        if value not in get_lm_field_values(new_field, new_issuetype):
+                            add_lm_field_value(value, new_field, new_issuetype)
+                        concatenated_value.append(value)
                     else:
                         concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)))
                 else:
@@ -2500,26 +2556,30 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = None if n_field_value == '' else [i for i in n_field_value]
                     else:
                         data_value = None if n_field_value == '' else [n_field_value]
+                elif issue_details_new[new_issuetype][n_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
+                    if type(n_field_value) == list and n_field_value != '':
+                        n_field_value = str(o_field_value).replace(' ', '_').replace('\n', '_').replace('\t', '_')
+                    if n_field_value not in get_lm_field_values(n_field, new_issuetype):
+                        add_lm_field_value(n_field_value, n_field, new_issuetype)
+                    data_value = [n_field_value]
                 elif issue_details_new[issuetype][n_field]['custom type'] == 'multiselect':
                     if issue_details_new[new_issuetype][n_field]['validated'] is True and n_field_value is not None:
                         data_value = []
                         for val in n_field_value:
                             for values in issue_details_new[new_issuetype][n_field]['allowed values']:
-                                if val == values:
-                                    data_value.append({"name": val})
+                                if str(val) == str(values):
+                                    data_value.append({"name": str(val)})
                                     break
                     else:
                         data_value = [{"name": get_str_from_lst(n_field_value)}]
                 else:
                     data_value = None if n_field_value == '' else {"name":  n_field_value}
             elif issue_details_new[issuetype][n_field]['type'] in ['option'] and issue_details_new[issuetype][n_field]['validated'] is True:
+                data_value = None
                 for value in issue_details_new[new_issuetype][n_field]['allowed values']:
-                    if n_field_value == value:
-                        data_value = {"value":  n_field_value}
+                    if str(n_field_value) == str(value):
+                        data_value = {"value":  str(n_field_value)}
                         break
-                    else:
-                        data_value = None
-                data_value = None if n_field_value == '' else {"value":  n_field_value}
             elif issue_details_new[issuetype][n_field]['type'] == 'option-with-child':
                 if n_field_value == '':
                     data_value = '[!DROP]'
@@ -2883,7 +2943,7 @@ def main_program():
         jql_min = 'project = {} order by key ASC'.format(project)
         min_processing_key = jira.search_issues(jql_str=jql_min, maxResults=1, json_result=False)[0].key
         
-        if key.split('-')[1] < min_processing_key.split('-')[1]:
+        if int(key.split('-')[1]) < int(min_processing_key.split('-')[1]):
             key = min_processing_key
         
         try:
