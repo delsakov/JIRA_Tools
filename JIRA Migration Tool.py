@@ -23,7 +23,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.7'
+current_version = '1.8'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -31,6 +31,8 @@ JIRA_BASE_URL_OLD = ''
 project_old = ''
 JIRA_BASE_URL_NEW = ''
 project_new = ''
+template_project = ''
+new_project_name = ''
 team_project_prefix = ''
 
 # JIRA API configs
@@ -40,6 +42,7 @@ JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
 JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
+JIRA_create_project_api = '/rest/scriptrunner/latest/custom/createProject'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
 
 # Disabling WARNINGS - hide them from console. All warnings will be covered by program itself.
@@ -1377,10 +1380,10 @@ def get_fields_list_by_project(jira, project):
     proj = auth_jira.project(project)
     try:
         project_fields = auth_jira.createmeta(projectKeys=proj, expand='projects.issuetypes.fields')
+        is_types = project_fields['projects'][0]['issuetypes']
     except:
         print("[ERROR] NO ACCESS to the '{}' project.".format(proj))
         return {}
-    is_types = project_fields['projects'][0]['issuetypes']
     issuetype_fields = {}
     for issuetype in is_types:
         issuetype_name = issuetype['name']
@@ -1764,6 +1767,7 @@ def load_config(message=True):
     """Loading pre-saved values from 'config.json' file."""
     global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date, start_jira_key
     global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads, pool_size
+    global template_project, new_project_name
     
     if os.path.exists(config_file) is True:
         try:
@@ -1798,6 +1802,10 @@ def load_config(message=True):
                     threads = v
                 elif k == 'pool_size':
                     pool_size = v
+                elif k == 'template_project':
+                    template_project = v
+                elif k == 'new_project_name':
+                    new_project_name = v
             if message is True:
                 print("[INFO] Configuration has been successfully loaded from '{}' file.".format(config_file))
         except Exception as er:
@@ -1828,6 +1836,8 @@ def save_config(message=True):
             'last_updated_date': last_updated_date,
             'threads': threads,
             'pool_size': pool_size,
+            "template_project": template_project,
+            "new_project_name": new_project_name,
             }
     
     try:
@@ -2669,10 +2679,33 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             print("[INFO] The details for update: '{}'".format(data_val))
 
 
+def check_target_project():
+    global JIRA_create_project_api, auth, project_new, template_project, jira_new, JIRA_BASE_URL_NEW, headers, verify
+    global new_project_name
+    
+    try:
+        proj = jira_new.project(project_new)
+        return
+    except:
+        if new_project_name == '':
+            new_project_name = project_new
+        data = {"key": project_new,
+                "parent": template_project,
+                "name": new_project_name
+                }
+        url = JIRA_BASE_URL_NEW + JIRA_create_project_api
+        r = requests.post(url=url, params=data, auth=auth, headers=headers, verify=verify)
+        if str(r.status_code) != '200':
+            print("[ERROR] Project can't be created due to: '{}'".format(r.content))
+        else:
+            print("[INFO] New Target project '{}' has been successfully created.".format(project_new), "", sep='\n')
+    
+
 def generate_template():
     """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
     global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads, verify
+    global json_importer_flag
     
     username = user.get()
     password = passwd.get()
@@ -2696,9 +2729,15 @@ def generate_template():
         print("[ERROR] Configuration parameters are not set. Exiting...")
         os.system("pause")
         exit()
+    
     print('[START] Template is being generated. Please wait...')
     print()
     print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
+    
+    check_global_admin_rights()
+    
+    if json_importer_flag == 1:
+        check_target_project()
     
     try:
         issue_details_old = get_fields_list_by_project(jira_old, project_old)
@@ -2745,6 +2784,25 @@ def processes_processing(function, items):
         chunck_size = 1
     with concurrent.futures.ProcessPoolExecutor(max_workers=pool_size) as executor:
         futures = {executor.submit(threads_processing(function, i), i) for i in grouper(items, chunck_size)}
+
+
+def check_global_admin_rights():
+    global project_new, JIRA_BASE_URL_NEW, JIRA_imported_api, headers, verify, auth, json_importer_flag, multiple_json_data_processing
+    
+    data = {"projects": [{"key": project_new}]}
+    url = JIRA_BASE_URL_NEW + JIRA_imported_api
+    try:
+        r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
+        if str(r.status_code) not in ['202', '409']:
+            json_importer_flag = 0
+            multiple_json_data_processing = 1
+            print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
+        else:
+            json_importer_flag = 1
+            print("[INFO] Global Admin access check for Target Project has been successfully validated.", "", sep='\n')
+    except:
+        json_importer_flag = 0
+        print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
 
 
 def main_program():
@@ -2894,7 +2952,6 @@ def main_program():
     
     # Loading data from Excel
     read_excel(file_path=mapping_file)
-    print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
     
     # Checking the JIRA credentials
     if len(username) < 3 or len(password) < 3:
@@ -2906,12 +2963,24 @@ def main_program():
     
     # Starting Program
     print("[START] Migration process has been started. Please wait...", "", sep='\n')
-    
+
+    # Check Global Admin Access
+    if json_importer_flag == 1:
+        check_global_admin_rights()
+        check_target_project()
+
+    print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
+
     try:
         issue_details_old = get_fields_list_by_project(jira_old, project_old)
         issue_details_new = get_fields_list_by_project(jira_new, project_new)
     except Exception as e:
         print("[ERROR] Issue Details can't be processed due to '{}'.".format(e))
+        os.system("pause")
+        exit()
+    
+    if issue_details_old == {} or issue_details_new == {}:
+        print("[ERROR] No access to the projects. Migration stopped.")
         os.system("pause")
         exit()
     
@@ -3024,22 +3093,6 @@ def main_program():
     # Creating / Cleaning Folder for Attachments migration
     if migrate_attachments_check == 1:
         create_temp_folder(temp_dir_name)
-    
-    # Check Global Admin Access
-    if json_importer_flag == 1:
-        data = {"projects": [{"key": project_new}]}
-        url = JIRA_BASE_URL_NEW + JIRA_imported_api
-        try:
-            r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
-            if str(r.status_code) not in ['202', '409']:
-                json_importer_flag = 0
-                multiple_json_data_processing = 1
-                print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
-            else:
-                print("[INFO] Global Admin access check for Target Project has been successfully validated.", "", sep='\n')
-        except:
-            json_importer_flag = 0
-            print("[WARNING] No Global Admin Rights for Target Project. JSON files for Change History migration will be created.", "", sep='\n')
     
     # Sprints migration check
     start_issues_time = time.time()
@@ -3214,11 +3267,11 @@ def overwrite_popup():
 
 def change_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
-    global start_jira_key, limit_migration_data
+    global start_jira_key, limit_migration_data, template_project, new_project_name
     global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads, pool_size
     
     def config_save():
-        global start_jira_key, limit_migration_data, pool_size
+        global start_jira_key, limit_migration_data, pool_size, template_project, new_project_name
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
         
         validation_error = 0
@@ -3231,7 +3284,9 @@ def change_configs():
         threads = threads_num.get().strip()
         pool_size = process_num.get().strip()
         last_updated_date = last_updated.get().strip()
-        
+        template_project = template_proj.get()
+        new_project_name = name_proj.get()
+
         if last_updated_date == 'YYYY-MM-DD':
             last_updated_date = ''
         
@@ -3295,7 +3350,17 @@ def change_configs():
         except:
             print("[ERROR] Number of processes is invalid. Default '1' will be used.")
             pool_size = 1
-        
+
+        try:
+            template_project = str(template_project).strip()
+        except:
+            template_project = ''
+
+        try:
+            new_project_name = str(new_project_name).strip()
+        except:
+            new_project_name = ''
+
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         save_config()
@@ -3307,8 +3372,8 @@ def change_configs():
     
     def check_similar(field, value):
         """ This function required for fixing same valu duplication issue for second Tk window """
-        global start_jira_key, limit_migration_data, pool_size, default_board_name, old_board_id
-        global team_project_prefix, validation_error, last_updated_date, threads
+        global start_jira_key, limit_migration_data, pool_size, default_board_name, old_board_id, new_project_name
+        global team_project_prefix, validation_error, last_updated_date, threads, template_project
         
         fields = {"start_jira_key": start_jira_key,
                   "limit_migration_data": limit_migration_data,
@@ -3319,6 +3384,8 @@ def change_configs():
                   "last_updated_date": last_updated_date,
                   "threads": threads,
                   "pool_size": pool_size,
+                  "template_project": template_project,
+                  "new_project_name": new_project_name,
                   }
         for f, v in fields.items():
             if str(value) == str(v) and field != f:
@@ -3397,19 +3464,31 @@ def change_configs():
     last_updated.grid(row=8, column=3, columnspan=2, padx=70, stick=W)
     
     tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=9, columnspan=5)
+
+    tk.Label(config_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=10, column=0, columnspan=4, stick=W)
+    template_proj = tk.Entry(config_popup, width=20, textvariable=template_project)
+    template_proj.insert(END, template_project)
+    template_proj.grid(row=10, column=3, columnspan=2, padx=30, stick=E)
     
-    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=20, sticky=W, columnspan=3)
-    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=2, pady=8, padx=20, sticky=E, columnspan=3)
+    tk.Label(config_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=11, column=1, columnspan=3, stick=W)
+    name_proj = tk.Entry(config_popup, width=45, textvariable=new_project_name)
+    name_proj.insert(END, new_project_name)
+    name_proj.grid(row=11, column=2, columnspan=3, padx=30, stick=E)
+    
+    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=12, columnspan=5)
+    
+    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=13, column=0, pady=8, padx=20, sticky=W, columnspan=3)
+    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=13, column=2, pady=8, padx=20, sticky=E, columnspan=3)
     
     tk.mainloop()
 
 
 def change_mappings_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
-    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+    global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name
     
     def config_save():
-        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name
         
         validation_error = 0
         
@@ -3417,6 +3496,8 @@ def change_mappings_configs():
         JIRA_BASE_URL_NEW = target_jira.get()
         project_old = source_project.get()
         project_new = target_project.get()
+        template_project = template_proj.get()
+        new_project_name = name_proj.get()
         
         config_mapping_popup.destroy()
         
@@ -3464,6 +3545,16 @@ def change_mappings_configs():
             print("[WARNING] Target JIRA Project Key is empty. Would be used same as Sourse.")
             project_new = project_old
             
+        try:
+            template_project = str(template_project).strip()
+        except:
+            template_project = ''
+            
+        try:
+            new_project_name = str(new_project_name).strip()
+        except:
+            new_project_name = ''
+            
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         save_config()
@@ -3475,12 +3566,14 @@ def change_mappings_configs():
     
     def check_similar(field, value):
         """ This function required for fixing same valu duplication issue for second Tk window """
-        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name
         
         fields = {"JIRA_BASE_URL_OLD": JIRA_BASE_URL_OLD,
                   "project_old": project_old,
                   "JIRA_BASE_URL_NEW": JIRA_BASE_URL_NEW,
                   "project_new": project_new,
+                  "template_project": template_project,
+                  "new_project_name": new_project_name,
                   }
         for f, v in fields.items():
             if str(value) == str(v) and field != f:
@@ -3522,7 +3615,21 @@ def change_mappings_configs():
     target_project.grid(row=2, column=3, padx=7, stick=E)
     
     tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=3, columnspan=4)
-    
+
+    template_project = check_similar("template_project", template_project)
+
+    tk.Label(config_mapping_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=4, column=1, columnspan=2, stick=W)
+    template_proj = tk.Entry(config_mapping_popup, width=20, textvariable=template_project)
+    template_proj.insert(END, template_project)
+    template_proj.grid(row=4, column=3, padx=7, stick=E)
+
+    tk.Label(config_mapping_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=5, column=1, columnspan=2, stick=E, padx=120)
+    name_proj = tk.Entry(config_mapping_popup, width=40, textvariable=new_project_name)
+    name_proj.insert(END, new_project_name)
+    name_proj.grid(row=5, column=2, columnspan=2, padx=7, stick=E)
+
+    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=6, columnspan=4)
+
     tk.Button(config_mapping_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_mapping_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=W, columnspan=4)
     tk.Button(config_mapping_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=E, columnspan=4)
     
