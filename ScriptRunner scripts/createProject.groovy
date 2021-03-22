@@ -15,7 +15,7 @@ createProject(httpMethod: "POST", group: ["u_jira_global_admin"]) { MultivaluedM
     def projectKey = request.getParameter("key")
     def projectName = request.getParameter("name")
     def projectParentKey = request.getParameter("parent")
-if (projectKey) {
+if (projectKey && projectName && projectParentKey) {
 	
 	def projectManager = ComponentAccessor.getProjectManager()
 	def copyProject = new CopyProject()
@@ -41,7 +41,7 @@ if (projectKey) {
     return Response.ok(new JsonBuilder("Project created": projectKey).toString()).build()
 }
 else {
-    def message = "'key' should be specified as params. Example: .../createProject?key=<NEW_KEY>&name=<NEW PROJECT NAME>"
+    def message = "'key' should be specified as params. Example: .../createProject?key=<NEW_KEY>&name=<NEW PROJECT NAME>&parent=<TEMPLATE PROJECT KEY>"
     return Response.ok(new JsonBuilder("Error": message).toString()).build()
 }
 }
