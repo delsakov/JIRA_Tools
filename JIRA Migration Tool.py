@@ -24,7 +24,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.8'
+current_version = '1.9'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -163,6 +163,7 @@ issuetypes_mappings = {}
 fields_mappings = {}
 status_mappings = {}
 field_value_mappings = {}
+link_mappings = {}
 
 # Transitions mapping - for status changes
 old_transitions = {}
@@ -173,7 +174,7 @@ new_transitions = {}
 def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
     """Function for reading Mapping Excel file and saves all mappings for further processing."""
     global issuetypes_mappings, fields_mappings, status_mappings, field_value_mappings, verbose_logging
-    global JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new
+    global JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, link_mappings
     print("[START] Mapping file is opened for processing.")
     
     def remove_spaces(mapping):
@@ -226,6 +227,14 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                 issuetypes_mappings[d[1].strip()]["issuetypes"].append(d[0].strip())
                             else:
                                 issuetypes_mappings[d[1].strip()] = {"hierarchy": '2', "issuetypes": [d[0].strip()]}
+                    elif excel_sheet_name == 'Links':
+                        if mapping_type == 0:
+                            link_mappings[d[0].strip()] = [d[2].strip()]
+                        else:
+                            if d[2].strip() in link_mappings.keys():
+                                link_mappings[d[2].strip()].append(d[0].strip())
+                            else:
+                                link_mappings[d[2].strip()] = [d[0].strip()]
                     elif excel_sheet_name == 'Statuses':
                         if mapping_type == 0:
                             for issuetype in d[0].split(','):
@@ -305,7 +314,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 def get_transitions(project, jira_url, new=False):
     global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify
-    print("[START] Retrieving Transitions and Statuses for '{}' project from JIRA.".format(project))
+    print("[START] Retrieving Transitions and Statuses for {} '{}' project from JIRA.".format('Target' if new is True else 'Source', project))
     
     statuses_lst = []
     
@@ -360,11 +369,11 @@ def get_transitions(project, jira_url, new=False):
             old_transitions = transitions
         else:
             new_transitions = transitions
-        print("[END] Transitions and Statuses for '{}' project has been successfully retrieved.".format(project))
+        print("[END] Transitions and Statuses for {} '{}' project has been successfully retrieved.".format('Target' if new is True else 'Source', project))
         print("")
     except Exception as e:
         migrate_statuses_check = 0
-        print("[WARNING] No PROJECT ADMIN right for the '{}' project. Statuses WILL NOT be updated / migrated.".format(project))
+        print("[WARNING] No PROJECT ADMIN right for the {} '{}' project. Statuses WILL NOT be updated / migrated.".format('Target' if new is True else 'Source', project))
         print("[ERROR] Transitions and Statuses can't be retrieved due to '{}'".format(e))
 
 
@@ -410,7 +419,7 @@ def calculate_statuses(transitions):
 def prepare_template_data():
     global old_transitions, new_transitions, issue_details_old, default_validation, jira_system_fields
     global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, migrate_statuses_check, json_importer_flag
-    global additional_mapping_fields
+    global additional_mapping_fields, jira_old, jira_new
     
     template_excel = {}
     old_statuses, new_statuses, old_issuetypes, new_issuetypes = ([], [], [], [])
@@ -442,12 +451,19 @@ def prepare_template_data():
                 fields_map_lst.append([issuetype, field, ''])
         # Add IssueType Name for mapping
         fields_map_lst.append([issuetype, issuetype + ' issuetype.name', ''])
-    
+        # Add IssueType Name for mapping
+        fields_map_lst.append([issuetype, issuetype + ' issuetype.status', ''])
+
     new_fields_val = additional_mapping_fields[:]
     for issuetype, fields in issue_details_new.items():
         for field, details in fields.items():
             if details['custom'] is True and field not in jira_system_fields:
                 new_fields_val.append(field.title())
+    try:
+        f_val = list(set(new_fields_val[:]))
+        f_val.sort()
+    except:
+        pass
     
     # Statuses
     statuses_map_lst = []
@@ -470,6 +486,24 @@ def prepare_template_data():
         if 'Priority' in field_values.keys():
             for p in field_values['Priority']['allowed values']:
                 priority_new_lst.append(p)
+    try:
+        pr_val = list(set(priority_new_lst[:]))
+        pr_val.sort()
+    except:
+        pass
+    
+    # Issue Linkage Types
+    links_map_lst = [['Source Link Name', 'Sourse Link Details', 'Target Link Name']]
+    links_new_lst = []
+    for link in jira_new.issue_link_types():
+        links_new_lst.append(link.name)
+    try:
+        l_val = list(set(links_new_lst[:]))
+        l_val.sort()
+    except:
+        pass
+    for link in jira_old.issue_link_types():
+        links_map_lst.append([link.name, link.inward + ' / ' + link.outward, link.name if link.name in links_new_lst else ''])
     
     # Combine all data under one dictionary
     template_excel['Project'] = project_details
@@ -478,6 +512,7 @@ def prepare_template_data():
     if migrate_statuses_check == 1:
         template_excel['Statuses'] = statuses_map_lst
     template_excel['Priority'] = priority_map_lst
+    template_excel['Links'] = links_map_lst
     
     # Other fields
     for field_values in issue_details_new.values():
@@ -501,13 +536,24 @@ def prepare_template_data():
         new_statuses_val = []
         for i in new_statuses:
             new_statuses_val.append(i[1])
-        default_validation['Statuses'] = '"' + get_str_from_lst(list(set(new_statuses_val)), spacing='') + '"'
-    default_validation['Fields'] = '"' + get_str_from_lst(list(set(new_fields_val)), spacing='') + '"'
+        try:
+            st_val = list(set(new_statuses_val[:]))
+            st_val.sort()
+        except:
+            pass
+        default_validation['Statuses'] = '"' + get_str_from_lst(st_val, spacing='') + '"'
+    default_validation['Fields'] = '"' + get_str_from_lst(f_val, spacing='') + '"'
     new_issuetypes_val = []
     for i in new_issuetypes:
         new_issuetypes_val.append(i)
-    default_validation['Issuetypes'] = '"' + get_str_from_lst(list(set(new_issuetypes_val)), spacing='') + '"'
-    default_validation['Priority'] = '"' + get_str_from_lst(list(set(priority_new_lst)), spacing='') + '"'
+    try:
+        i_val = list(set(new_issuetypes_val[:]))
+        i_val.sort()
+    except:
+        pass
+    default_validation['Issuetypes'] = '"' + get_str_from_lst(i_val, spacing='') + '"'
+    default_validation['Priority'] = '"' + get_str_from_lst(pr_val, spacing='') + '"'
+    default_validation['Links'] = '"' + get_str_from_lst(l_val, spacing='') + '"'
     
     return template_excel
 
@@ -1075,6 +1121,20 @@ def migrate_comments(old_issue, new_issue):
             jira_new.add_comment(new_issue, body=str(data))
 
 
+def get_new_link_type(old_link):
+    global link_mappings
+    
+    new_link = old_link
+    try:
+        for k, v in link_mappings.items():
+            if old_link in v:
+                new_link = k
+                return new_link
+    except:
+        pass
+    return new_link
+
+
 def migrate_links(old_issue, new_issue):
     outward_issue_links = {}
     inward_issue_links = {}
@@ -1096,19 +1156,20 @@ def migrate_links(old_issue, new_issue):
         if hasattr(link, "outwardIssue"):
             new_id = link.outwardIssue.key.replace(project_old, project_new)
             if new_id not in outward_issue_links.keys() or (new_id in outward_issue_links.keys()
-                                                            and link.type.outward != outward_issue_links[new_id]):
+                                                            and link.type.outward.lower() != outward_issue_links[new_id].lower()):
                 try:
-                    jira_new.create_issue_link(link.type.outward, new_issue.key, new_id)
+                    jira_new.create_issue_link(get_new_link_type(link.type.name), new_issue.key, new_id)
                 except:
                     pass
         if hasattr(link, "inwardIssue"):
             new_id = link.inwardIssue.key.replace(project_old, project_new)
             if new_id not in inward_issue_links.keys() or (new_id in inward_issue_links.keys()
-                                                           and link.type.inward != inward_issue_links[new_id]):
+                                                           and link.type.inward.lower() != inward_issue_links[new_id].lower()):
                 try:
-                    jira_new.create_issue_link(link.type.inward, new_issue.key, new_id)
+                    jira_new.create_issue_link(get_new_link_type(link.type.name), new_id, new_issue.key)
                 except:
                     pass
+
 
 def migrate_attachments(old_issue, new_issue):
     global temp_dir_name, jira_old, JIRA_attachment_api, atlassian_jira_old
@@ -1602,6 +1663,19 @@ def create_excel_sheet(sheet_data, title):
         priority_val = DataValidation(type="list", formula1=default_validation['Priority'], allow_blank=False)
         ws.add_data_validation(priority_val)
         priority_val.add(excel_columns_validation_ranges['1'])
+    
+    if title == 'Links' and len(default_validation['Links']) > 0:
+        start_row = 1
+        start_column = ws.max_column + 1
+        for i in default_validation['Links'].split(','):
+            ws.cell(row=start_row+1, column=start_column).value = i.replace('"', '')
+            start_row += 1
+        col_letter = ws.cell(row=start_row, column=start_column).column_letter
+        formula1 = '$' + col_letter + '$2:$' + col_letter + '$' + str(len(default_validation['Links'].split(',')) + 1)
+        links_val = DataValidation(type="list", formula1=formula1, allow_blank=True)
+        ws.add_data_validation(links_val)
+        links_val.add(excel_columns_validation_ranges['2'])
+        ws.column_dimensions[col_letter].hidden = True
     
     ws.title = title
     
@@ -2320,6 +2394,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value = int(float(str(value).replace('\n', '').replace('\t', ' ')))
                 except:
                     pass
+            elif issue_details_old[old_issuetype][field]['custom type'] == 'labels':
+                value = get_str_from_lst(value)
             elif issue_details_old[old_issuetype][field]['type'] == 'option-with-child' and value is not None:
                 value_value = value.value
                 try:
@@ -2420,6 +2496,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             return old_field
         for fields in old_field:
             if 'issuetype.name' in fields:
+                return get_new_value_from_mapping(old_issuetype, new_field)
+            if 'issuetype.status' in fields:
                 return get_new_value_from_mapping(old_issuetype, new_field)
         if old_field == '':
             try:
@@ -2564,9 +2642,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = None if n_field_value == '' else [{"name": n_field_value.name}]
                 elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
                     if type(n_field_value) == list and n_field_value != '':
-                        data_value = None if n_field_value == '' else [i for i in n_field_value]
+                        data_value = ['' if (i is None or i == 'None') else i for i in n_field_value]
                     else:
-                        data_value = None if n_field_value == '' else [n_field_value]
+                        data_value = [n_field_value]
                 elif issue_details_new[new_issuetype][n_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
                     if type(n_field_value) == list and n_field_value != '':
                         n_field_value = str(o_field_value).replace(' ', '_').replace('\n', '_').replace('\t', '_')
@@ -2694,12 +2772,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         new_labels = []
         if 'labels' in data_val.keys():
             for label in data_val['labels']:
-                new_labels.append(label.replace(' ', '_'))
+                new_label = label.replace(' ', '_')
+                if new_label not in ['', ' ']:
+                    new_labels.append(new_label)
         new_labels = set(new_labels)
-        try:
-            new_labels.remove(' ')
-        except:
-            pass
         data_val['labels'] = list(new_labels)
     except:
         pass
@@ -3253,7 +3329,7 @@ def main_program():
     
     # Extra Logging
     if verbose_logging == 1:
-        print('[INFO] The list of migrated issues by type:', items_lst)
+        print('[INFO] The list of migrated issues by type:', str(items_lst))
     
     # Creating missing Dummy issues
     if json_importer_flag == 0 and multiple_json_data_processing == 0:
