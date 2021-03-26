@@ -2548,6 +2548,19 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         return value
             value = concatenated_value
         else:
+            if new_field == 'Description':
+                if 'description' in data_val.keys() and '----\r\n' in data_val['description']:
+                    value = data_val['description'] + ' *[' + old_field[0] + ']:* ' + get_value(old_field[0])
+                elif 'description' in data_val.keys():
+                    value = data_val['description'] + '\r\n----\r\n' + ' *[' + old_field[0] + ']:* ' + get_value(old_field[0])
+                else:
+                    value = get_value(old_field[0])
+                return value
+            elif new_field == 'Labels' and 'labels' in data_val.keys():
+                concatenated_value = data_val['labels']
+                concatenated_value.append('' if get_value(old_field[0]) is None else str(get_value(old_field[0])).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                value = concatenated_value
+                return value
             value = get_value(old_field[0])
         return value
     
