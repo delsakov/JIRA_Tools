@@ -1645,9 +1645,17 @@ def create_excel_sheet(sheet_data, title):
             ws.column_dimensions[col_letter].hidden = True
     
     if title == 'Issuetypes':
-        issuetypes_val = DataValidation(type="list", formula1=default_validation['Issuetypes'], allow_blank=False)
+        start_row = 1
+        start_column = ws.max_column + 1
+        for i in default_validation['Issuetypes'].split(','):
+            ws.cell(row=start_row+1, column=start_column).value = i.replace('"', '')
+            start_row += 1
+        col_letter = ws.cell(row=start_row, column=start_column).column_letter
+        formula1 = '$' + col_letter + '$2:$' + col_letter + '$' + str(len(default_validation['Issuetypes'].split(',')) + 1)
+        issuetypes_val = DataValidation(type="list", formula1=formula1, allow_blank=True)
         ws.add_data_validation(issuetypes_val)
         issuetypes_val.add(excel_columns_validation_ranges['1'])
+        ws.column_dimensions[col_letter].hidden = True
     
     if title == 'Fields':
         issuetypes_val = DataValidation(type="list", formula1='INDIRECT(SUBSTITUTE(SUBSTITUTE(VLOOKUP($A2,Issuetypes!$A$2:$B$' + str(len(issue_details_old.keys()) + 1) + ',2,FALSE)," ","__"),"-","_"))', allow_blank=False)
@@ -1746,7 +1754,7 @@ def delete_extra_issues(max_id):
             return (1, key)
             
     # Check if that Issue available in the Source JIRA Project
-    max_id = find_max_id(max_id)
+    max_id = find_max_id(max_id, project=project_old, jira=jira_old)
     
     # Calculating total Number of Issues in OLD JIRA Project
     jql_total_old = "project = '{}' AND key >= {} AND key <= {} {}".format(project_old, start_jira_key, max_id, recently_updated)
@@ -1985,6 +1993,25 @@ def save_config(message=True):
     print("")
 
 
+
+def get_priority(new_issue_type, old_issue):
+    global field_value_mappings, issue_details_new
+    
+    new_priority = issue_details_new[new_issue_type]['Priority']['default value']
+    old_priority = ''
+    
+    try:
+        old_priority = old_issue.fields.priority.name
+    except:
+        old_priority = ''
+    try:
+        for new_value, old_values in field_value_mappings['Priority'].items():
+            if str(old_priority.strip()) in old_values and new_value != '':
+                return new_value
+    except:
+        pass
+    return new_priority
+
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
@@ -2003,26 +2030,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             print("[INFO] File '{}' has been created.".format(filename))
         except:
             print("[ERROR] JSON File can't be created.")
-    
-    def get_priority(new_issue_type, old_issue):
-        global field_value_mappings, issue_details_new
         
-        new_priority = issue_details_new[new_issue_type]['Priority']['default value']
-        old_priority = ''
-        
-        try:
-            old_priority = old_issue.fields.priority.name
-        except:
-            old_priority = ''
-        
-        try:
-            for new_value, old_values in field_value_mappings['Priority'].items():
-                if str(old_priority.strip()) in old_values and new_value != '':
-                    return new_value
-        except:
-            pass
-        return new_priority
-    
     def get_duration(jira_duration):
         weeks, days, hours, minutes, seconds = (0, 0, 0, 0, 0)
         time_lst = str(jira_duration).split(' ')
@@ -2331,8 +2339,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             return new_issue_sprints
         try:
             value = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field]['id'])
-            if value == []:
-                return value
+            try:
+                if value == []:
+                    return value
+            except:
+                pass
         except:
             return None
         if type(value) == list:
@@ -2549,12 +2560,13 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             value = concatenated_value
         else:
             if new_field == 'Description':
+                added_description = get_value(old_field[0]) if get_value(old_field[0]) is not None else '...'
                 if 'description' in data_val.keys() and '----\r\n' in data_val['description']:
-                    value = data_val['description'] + ' *[' + old_field[0] + ']:* ' + get_value(old_field[0])
+                    value = data_val['description'] + ' *[' + old_field[0] + ']:* ' + added_description
                 elif 'description' in data_val.keys():
-                    value = data_val['description'] + '\r\n----\r\n' + ' *[' + old_field[0] + ']:* ' + get_value(old_field[0])
+                    value = data_val['description'] + '\r\n----\r\n *[' + old_field[0] + ']:* ' + added_description
                 else:
-                    value = get_value(old_field[0])
+                    value = added_description
                 return value
             elif new_field == 'Labels' and 'labels' in data_val.keys():
                 concatenated_value = data_val['labels']
@@ -2655,9 +2667,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = None if n_field_value == '' else [{"name": n_field_value.name}]
                 elif issue_details_new[issuetype][n_field]['custom type'] == 'labels' or n_field == 'Labels':
                     if type(n_field_value) == list and n_field_value != '':
-                        data_value = ['' if (i is None or i == 'None') else i for i in n_field_value]
+                        data_value = ['' if (i is None or i == 'None') else i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in n_field_value]
                     else:
-                        data_value = [n_field_value]
+                        data_value = [n_field_value.replace(' ', '_').replace('\n', '_').replace('\t', '_')]
                 elif issue_details_new[new_issuetype][n_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
                     if type(n_field_value) == list and n_field_value != '':
                         n_field_value = str(o_field_value).replace(' ', '_').replace('\n', '_').replace('\t', '_')
@@ -2719,15 +2731,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     # Post-processing for Reporter and Creator for JSON importer case
     if json_importer_flag == 1:
         try:
-            data_val.pop('assignee', None)
+            if new_issue.fields.assignee.name == old_issue.fields.assignee.name:
+                data_val.pop('assignee', None)
         except:
             pass
         try:
-            data_val.pop('reporter', None)
+            if new_issue.fields.reporter.name == old_issue.fields.reporter.name:
+                data_val.pop('reporter', None)
         except:
             pass
         try:
-            data_val.pop('priority', None)
+            if new_issue.fields.priority.name == get_priority(issuetype, old_issue):
+                data_val.pop('priority', None)
         except:
             pass
         try:
@@ -2802,8 +2817,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     if verbose_logging == 1:
         print("[INFO] The currently processing: '{}'".format(old_issue.key))
-    # For debug:
-    # print("[INFO] The details for update: '{}'".format(data_val))
+        print("[INFO] The details for update: '{}'".format(data_val))
     
     try:
         new_issue.update(notify=False, fields=data_val)
