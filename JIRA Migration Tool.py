@@ -1,3 +1,8 @@
+# This Migration Tool has been created by Dmitry Elsakov
+# The main source code has been created over weekends and distributed over GPL-3.0 License
+# The license details could be found here: https://github.com/delsakov/JIRA_Tools/
+# Please do not change notice above and copyright
+
 from jira import JIRA
 from atlassian import jira
 from openpyxl import Workbook, load_workbook
@@ -24,7 +29,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '1.9'
+current_version = '2.0'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -65,6 +70,9 @@ verify = True
 header_font = Font(color='00000000', bold=True)
 header_fill = PatternFill(fill_type="solid", fgColor="8db5e2")
 hyperlink = Font(underline='single', color='0563C1')
+project_tab_color = '32CD32'  # Green
+mandatory_tab_color = 'FA8072'  # Red
+optional_tab_color = 'F4A460'  # Amber
 zoom_scale = 100
 wb = Workbook()
 default_validation = {}
@@ -1552,6 +1560,8 @@ def load_file():
 def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
     global jira_system_fields, additional_mapping_fields, new_transitions
+    global project_tab_color, mandatory_tab_color, optional_tab_color
+
     try:
         wb.create_sheet(title)
     except:
@@ -1686,12 +1696,25 @@ def create_excel_sheet(sheet_data, title):
         ws.column_dimensions[col_letter].hidden = True
     
     ws.title = title
+
+    # Coloring sheets
+    if title == 'Project':
+        ws.sheet_properties.tabColor = project_tab_color
+    elif title in ['Issuetypes', 'Fields', 'Statuses', 'Priority']:
+        ws.sheet_properties.tabColor = mandatory_tab_color
+    elif title == 'Links':
+        ws.sheet_properties.tabColor = optional_tab_color
     
     sheet_names = wb.sheetnames
     for s in sheet_names:
         ws = wb.get_sheet_by_name(s)
         if ws.dimensions == 'A1:A1':
             wb.remove_sheet(wb[s])
+
+    # Hiding all non-mandatory sheets
+    # if title not in ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']:
+    #     ws.sheet_state = 'hidden'
+
 
 def save_excel():
     """Saving prepared Excel File. Applying zooming / scaling upon saving."""
