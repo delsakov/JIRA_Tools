@@ -2100,7 +2100,18 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, size
-    global multiple_json_data_processing, total_data, already_processed_users, total_processed
+    global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
+
+    def get_watchers(jira, key):
+        watchers = []
+        try:
+            watcher = jira.watchers(key)
+            if watcher.watchers != []:
+                for w in watcher.watchers:
+                    watchers.append(w.name)
+        except:
+            pass
+        return watchers
     
     def update_issues_json(data):
         global project_new, json_file_part_num
@@ -2347,6 +2358,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         project_issue["worklogs"] = worklogs
         project_issue["summary"] = old_issue.fields.summary
         project_issue["updated"] = old_issue.fields.updated
+        project_issue["watchers"] = get_watchers(jira_old, old_issue.key)
     project_issue["labels"] = ['MIGRATION_NOT_COMPLETE']
     project_details["issues"].append(project_issue)
     data["projects"].append(project_details)
