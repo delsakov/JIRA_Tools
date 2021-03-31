@@ -825,7 +825,7 @@ def get_all_shared_teams():
             for team in teams_lst:
                 teams[team['title']] = team['id']
             if verbose_logging == 1:
-                print('[INFO] Teams retrieved from JIRA so far: ', len(teams))
+                print("[INFO] Teams retrieved from JIRA so far: {}".format(len(teams)))
             return (0, i)
         except:
             return (1, i)
@@ -2754,10 +2754,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = []
                         for i in n_field_value:
                             try:
-                                if jira_new.search_users(i.name) == []:
+                                try:
+                                    users = jira_new.search_users(i.name)
+                                except:
+                                    users = jira_new.search_users(i)
+                                if users == []:
                                     data_value.append({"name": None})
                                 else:
-                                    data_value.append({"name": i.name})
+                                    try:
+                                        data_value.append({"name": i.name})
+                                    except:
+                                        data_value.append({"name": i})
                             except:
                                 data_value.append({"name": None})
                     else:
