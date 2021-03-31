@@ -73,6 +73,8 @@ hyperlink = Font(underline='single', color='0563C1')
 project_tab_color = '32CD32'  # Green
 mandatory_tab_color = 'FA8072'  # Red
 optional_tab_color = 'F4A460'  # Amber
+mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']
+hide_tabs = False
 zoom_scale = 100
 wb = Workbook()
 default_validation = {}
@@ -123,6 +125,8 @@ username, password = ('', '')
 auth = (username, password)
 items_lst = {}
 sub_tasks = {}
+old_sub_tasks = {}
+new_issues_ids = {}
 teams = {}
 total_data = {}
 total_data["projects"] = []
@@ -327,7 +331,7 @@ def get_transitions(project, jira_url, new=False):
     statuses_lst = []
     
     def get_workflows(project, jira_url, new):
-        global sub_tasks, auth
+        global sub_tasks, auth, old_sub_tasks, new_issues_ids
         url = jira_url + '/rest/projectconfig/1/workflowscheme/' + project
         r = requests.get(url, auth=auth, headers=headers, verify=verify)
         workflow_schema_string = r.content.decode('utf-8')
@@ -338,6 +342,10 @@ def get_transitions(project, jira_url, new=False):
             issuetypes[issuetype['id']] = issuetype['name']
             if new is True and issuetype['subTask'] is True:
                 sub_tasks[issuetype['name']] = issuetype['id']
+            elif issuetype['subTask'] is True:
+                old_sub_tasks[issuetype['name']] = issuetype['id']
+            if new is True and issuetype['subTask'] is False:
+                new_issues_ids[issuetype['name']] = issuetype['id']
         for workflow in workflow_schema_details['mappings']:
             workflows[workflow['name']] = [issuetypes[i] for i in workflow['issueTypes']]
         return workflows
@@ -1240,7 +1248,7 @@ def migrate_attachments(old_issue, new_issue):
                     if os.path.exists(full_name):
                         os.remove(full_name)
         except Exception as e:
-                    print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
+            print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
 
 
 def migrate_status(new_issue, old_issue):
@@ -1341,7 +1349,7 @@ def process_issue(key):
     global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
     global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old
-    global multiple_json_data_processing
+    global multiple_json_data_processing, verbose_logging
 
     try:
         new_issue_type = ''
@@ -1385,7 +1393,7 @@ def process_issue(key):
                         print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
                         return (0, key)
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
-                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
         except Exception as e:
             if json_importer_flag == 0:
                 print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
@@ -1436,7 +1444,7 @@ def process_issue(key):
                                 if parent is not None:
                                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                            except:
+                            except Exception as e:
                                 if key not in failed_issues:
                                     failed_issues.append(key)
                                     return(0, key)
@@ -1470,7 +1478,9 @@ def process_issue(key):
         except:
             pass
         return (0, key)
-    except:
+    except Exception as e:
+        if verbose_logging == 1:
+            print("[ERROR] Exception while processing '{}' issue: '{}'.".format(key, e))
         return (1, key)
 
 
@@ -1560,7 +1570,7 @@ def load_file():
 def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
     global jira_system_fields, additional_mapping_fields, new_transitions
-    global project_tab_color, mandatory_tab_color, optional_tab_color
+    global project_tab_color, mandatory_tab_color, optional_tab_color, mandatory_template_tabs, hide_tabs
 
     try:
         wb.create_sheet(title)
@@ -1712,8 +1722,8 @@ def create_excel_sheet(sheet_data, title):
             wb.remove_sheet(wb[s])
 
     # Hiding all non-mandatory sheets
-    # if title not in ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']:
-    #     ws.sheet_state = 'hidden'
+    if hide_tabs is True and title not in mandatory_template_tabs:
+        ws.sheet_state = 'hidden'
 
 
 def save_excel():
@@ -1761,20 +1771,21 @@ def get_minfields_issuetype(issue_details, all=0):
         return i_types
 
 
+def delete_issue(key):
+    global username, password
+    
+    try:
+        atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
+        atlassian_jira_new.delete_issue(key)
+        return (0, key)
+    except:
+        return (1, key)
+
+
 def delete_extra_issues(max_id):
     """Function for removal extra Dummy Issues created via Migration Process (to have same ids while migration)"""
     global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag, threads
     global recently_updated, max_retries, default_max_retries
-    
-    def delete_issue(key):
-        global username, password
-        
-        try:
-            atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
-            atlassian_jira_new.delete_issue(key)
-            return (0, key)
-        except:
-            return (1, key)
             
     # Check if that Issue available in the Source JIRA Project
     max_id = find_max_id(max_id, project=project_old, jira=jira_old)
@@ -1914,6 +1925,56 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
     r.raise_for_status()
     
     url_13 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueConvert.jspa'
+    payload_13 = {
+        "id": new_issue.id,
+        "guid": guid,
+        "Finish": "Finish",
+        "atl_token": session.cookies.get('atlassian.xsrf.token'),
+    }
+    
+    r = session.post(url=url_13, data=payload_13, verify=verify)
+    r.raise_for_status()
+
+
+def convert_to_issue(new_issue, issuetype):
+    """ This function will convert sub-task to issue via parsing HTML page and apply emulation of conversion via UI. """
+    global auth, verify, new_issues_ids
+    
+    session = requests.Session()
+
+    url0 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTask.jspa?id=' + new_issue.id
+    r = session.get(url=url0, auth=auth, verify=verify)
+    soup = BeautifulSoup(r.text, features="lxml")
+    try:
+        guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
+    except Exception as e:
+        print("[ERROR] Issue '{}' can't be converted to Issue from Sub-Task. Details: '{}'.".format(new_issue.key, e))
+        return
+    
+    url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTaskSetIssueType.jspa'
+    payload_11 = {
+        "issuetype": new_issues_ids[issuetype],
+        "id": new_issue.id,
+        "guid": guid,
+        "Next >>": "Next >>",
+        "atl_token": session.cookies.get('atlassian.xsrf.token'),
+    }
+    
+    r = session.post(url=url_11, data=payload_11, headers={"Referer": url0}, verify=verify)
+    r.raise_for_status()
+    
+    url_12 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTaskUpdateFields.jspa'
+    payload_12 = {
+        "id": new_issue.id,
+        "guid": guid,
+        "Next >>": "Next >>",
+        "atl_token": session.cookies.get('atlassian.xsrf.token'),
+    }
+    
+    r = session.post(url=url_12, data=payload_12, verify=verify)
+    r.raise_for_status()
+    
+    url_13 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTaskConvert.jspa'
     payload_13 = {
         "id": new_issue.id,
         "guid": guid,
@@ -2313,7 +2374,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify)
             return (r.status_code, r.content)
         except Exception as e:
-            print("[ERRROR] JSON Importer error: '{}'".format(e))
+            print("[ERROR] JSON Importer error: '{}'".format(e))
             return (0, e)
 
 
@@ -2599,18 +2660,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             value = get_value(old_field[0])
         return value
     
-    def update_issuetype(issuetype, old_issutype, old_issue=old_issue):
-        global issue_details_new
+    def update_issuetype(issuetype, old_issuetype, old_issue=old_issue):
+        global issue_details_new, verbose_logging
         data = {}
         mandatory_fields = get_minfields_issuetype(issue_details_new, all=1)
         data['issuetype'] = {'name': issuetype}
-        for field in mandatory_fields[old_issutype]:
-            for f in issue_details_new[old_issutype]:
-                if issue_details_new[old_issutype][f]['id'] == field:
-                    default_value = issue_details_new[old_issutype][f]['default value']
-                    allowed = issue_details_new[old_issutype][f]['allowed values']
-                    type = issue_details_new[old_issutype][f]['type']
-                    custom_type = issue_details_new[old_issutype][f]['custom type']
+        for field in mandatory_fields[old_issuetype]:
+            for f in issue_details_new[old_issuetype]:
+                if issue_details_new[old_issuetype][f]['id'] == field:
+                    default_value = issue_details_new[old_issuetype][f]['default value']
+                    allowed = issue_details_new[old_issuetype][f]['allowed values']
+                    type = issue_details_new[old_issuetype][f]['type']
+                    custom_type = issue_details_new[old_issuetype][f]['custom type']
                     if type == 'option':
                         value = allowed[0] if default_value is None else default_value
                         data[field] = eval('{"value": "' + value + '"}')
@@ -2629,20 +2690,39 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data[field] = default_value
         try:
             new_issue.update(notify=False, fields=data)
-        except:
+        except Exception as e:
+            if verbose_logging == 1:
+                print("[ERROR] Exception for updating Issuetype for '{}' issue from '{}' to '{}'.".format(new_issue.key, old_issuetype, issuetype))
+                print("[ERROR] Exception: '{}'".format(e))
             new_issue.update(notify=True, fields=data)
     
     data_val = {}
+    diff_issuetypes = 0
+    try:
+        parent = new_issue.fields.parent
+    except:
+        parent = None
     new_issuetype = new_issue.fields.issuetype.name
+    if new_issuetype != issuetype:
+        diff_issuetypes = 1
     # Checking for Sub-Task and convert to Sub-Task if necessary
     if issuetype in sub_tasks.keys():
         parent_field = old_issue.fields.parent
         parent = None if parent_field is None else parent_field.key.replace(project_old, project_new)
         if parent is not None and new_issuetype != issuetype:
             convert_to_subtask(parent, new_issue, sub_tasks[issuetype])
+            diff_issuetypes = 0
+    elif old_issue.fields.issuetype.name in old_sub_tasks.keys() and (new_issuetype in sub_tasks.keys() or parent is not None):
+        if json_importer_flag == 0:
+            convert_to_issue(new_issue, issuetype)
+            diff_issuetypes = 0
+        else:
+            new_key = new_issue.key
+            delete_issue(new_key)
+            return process_issue(new_key)
     data_val['summary'] = old_issue.fields.summary
     data_val['issuetype'] = {'name': issuetype}
-    if new_issuetype != issuetype:
+    if diff_issuetypes == 1:
         update_issuetype(issuetype, new_issuetype)
     
     # System fields
@@ -2750,6 +2830,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         old_team = eval('new_issue.fields.' + issue_details_new[issuetype]['Team']['id'])
         if issuetype in sub_tasks.keys() or old_team is not None:
             data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
+    
+    # Post-processing for Assignee, if issue was converted from Sub-Task
+    new_assignee = None
+    old_assignee = None
+    if new_issue.fields.assignee is not None and jira_new.search_users(new_issue.fields.assignee.name) != []:
+        new_assignee = new_issue.fields.assignee.name
+    if old_issue.fields.assignee is not None:
+        old_assignee = old_issue.fields.assignee.name
+    if new_assignee != old_assignee and old_assignee is not None and jira_new.search_users(old_issue.fields.assignee.name):
+        data_val['assignee'] = {"name": old_issue.fields.assignee.name}
+    elif new_assignee != old_assignee and old_assignee is None:
+        data_val['assignee'] = None
     
     # Post-processing for Reporter and Creator for JSON importer case
     if json_importer_flag == 1:
@@ -2869,10 +2961,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 except Exception as er:
                     print("[ERROR] Session was killed by JIRA. Exception: '{}'".format(er.text))
             else:
-                print("[ERROR] for '{}' is '{}'".format(new_issue.key, e))
+                print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
                 print("[INFO] The details for update: '{}'".format(data_val))
         except:
-            print("[ERROR] for '{}' is '{}'".format(new_issue.key, e))
+            print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
             print("[INFO] The details for update: '{}'".format(data_val))
 
 
@@ -3217,6 +3309,10 @@ def main_program():
     
     if migrate_statuses_check == 1 or json_importer_flag == 1:
         get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
+        try:
+            get_transitions(project_old, JIRA_BASE_URL_OLD, new=False)
+        except:
+            print("[WARNING] No PROJECT ADMIN rigts available for Source '{}' project. Sub-Tasks can't be converted into Issues.".format(project_old))
     
     get_hierarchy_config()
     
