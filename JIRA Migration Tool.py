@@ -76,7 +76,7 @@ hyperlink = Font(underline='single', color='0563C1')
 project_tab_color = '32CD32'  # Green
 mandatory_tab_color = 'FA8072'  # Red
 optional_tab_color = 'F4A460'  # Amber
-mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']
+mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority', 'Links']
 hide_tabs = False
 zoom_scale = 100
 wb = Workbook()
@@ -492,7 +492,7 @@ def prepare_template_data():
         fields_map_lst.append([issuetype, issuetype + ' issuetype.name', ''])
         # Add IssueType Name for mapping
         fields_map_lst.append([issuetype, issuetype + ' issuetype.status', ''])
-
+    
     new_fields_val = additional_mapping_fields[:]
     for issuetype, fields in issue_details_new.items():
         for field, details in fields.items():
@@ -695,7 +695,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
             return (0, param)
         except:
             return (1, param)
-        
+    
     start_idx, block_num, block_size = (0, 0, 100)
     if max_result != 0 and block_size > max_result:
         block_size = max_result
@@ -852,7 +852,7 @@ def get_all_shared_teams():
             return (0, i)
         except:
             return (1, i)
-       
+    
     print("[START] Reading ALL available shared teams.")
     try:
         pages = [i for i in range(1, get_total_teams() // 100 + 2)]
@@ -884,7 +884,7 @@ def get_team_id(team_name):
 
 def get_lm_field_values(field_name, type):
     global JIRA_BASE_URL_NEW, JIRA_labelit_api, headers, verify, auth, project_new, issue_details_new
-
+    
     url = JIRA_BASE_URL_NEW + JIRA_labelit_api
     proj = jira_new.project(project_new).id
     field_id = issue_details_new[type][field_name]['id']
@@ -901,7 +901,7 @@ def get_lm_field_values(field_name, type):
         for l in lm_data:
             labels.append(l["name"])
     return labels
-    
+
 
 def add_lm_field_value(value, field_name, type):
     global JIRA_BASE_URL_NEW, JIRA_labelit_api, headers, verify, auth, project_new, issue_details_new
@@ -916,7 +916,7 @@ def add_lm_field_value(value, field_name, type):
     r = requests.post(url, json=body, auth=auth, headers=headers, verify=verify)
     if str(r.status_code) != '201':
         print("[WARNING] Value '{}' can't be added into Label Manager field.".format(name))
-    
+
 
 def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, name=default_board_name, param='FUTURE'):
     global old_sprints, new_sprints, jira_old, jira_new, limit_migration_data, limit_migration_data, auth, max_retries
@@ -971,7 +971,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
             return (0, data)
         except Exception as e:
             return (0, data)
-        
+    
     start_time = time.time()
     if param == 'FUTURE':
         print("[START] Sprints and Issues processing has been started. All relevant Sprints and Issues are retrieving from Source JIRA.")
@@ -1079,7 +1079,7 @@ def migrate_components():
             return (0, data)
         except:
             return (1, data)
-        
+    
     new_components_lst = []
     components_data = []
     for new_component in new_components:
@@ -1119,7 +1119,7 @@ def migrate_versions():
         except Exception as e:
             print('Exception: {}'.format(e.text))
             return (1, data)
-        
+    
     versions = []
     new_versions_lst = []
     for new_version in new_versions:
@@ -1210,7 +1210,7 @@ def migrate_links(old_issue, new_issue):
                     pass
 
 
-def migrate_attachments(old_issue, new_issue):
+def migrate_attachments(old_issue, new_issue, retry=True):
     global temp_dir_name, jira_old, JIRA_attachment_api, atlassian_jira_old
     new_attachments = []
     if new_issue.fields.attachment:
@@ -1271,7 +1271,10 @@ def migrate_attachments(old_issue, new_issue):
                     if os.path.exists(full_name):
                         os.remove(full_name)
         except Exception as e:
-            print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
+            if retry is True:
+                migrate_attachments(old_issue, new_issue, retry=False)
+            else:
+                print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
 
 
 def migrate_status(new_issue, old_issue):
@@ -1358,7 +1361,7 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
             if l[0] == type and l[1] == status:
                 return status
         return new_transitions[type][0]
-        
+    
     for n_status, o_statuses in status_mappings[old_issue_type].items():
         for o_status in o_statuses:
             if old_status.upper() == o_status.upper() and n_status != '':
@@ -1373,7 +1376,7 @@ def process_issue(key):
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
     global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old
     global multiple_json_data_processing, verbose_logging
-
+    
     try:
         new_issue_type = ''
         new_issue_key = project_new + '-' + key.split('-')[1]
@@ -1594,7 +1597,7 @@ def create_excel_sheet(sheet_data, title):
     global JIRA_BASE_URL, header, output_excel, default_validation, issue_details_new, issue_details_old
     global jira_system_fields, additional_mapping_fields, new_transitions
     global project_tab_color, mandatory_tab_color, optional_tab_color, mandatory_template_tabs, hide_tabs
-
+    
     try:
         wb.create_sheet(title)
     except:
@@ -1729,7 +1732,7 @@ def create_excel_sheet(sheet_data, title):
         ws.column_dimensions[col_letter].hidden = True
     
     ws.title = title
-
+    
     # Coloring sheets
     if title == 'Project':
         ws.sheet_properties.tabColor = project_tab_color
@@ -1743,7 +1746,7 @@ def create_excel_sheet(sheet_data, title):
         ws = wb.get_sheet_by_name(s)
         if ws.dimensions == 'A1:A1':
             wb.remove_sheet(wb[s])
-
+    
     # Hiding all non-mandatory sheets
     if hide_tabs is True and title not in mandatory_template_tabs:
         ws.sheet_state = 'hidden'
@@ -1809,7 +1812,7 @@ def delete_extra_issues(max_id):
     """Function for removal extra Dummy Issues created via Migration Process (to have same ids while migration)"""
     global start_jira_key, jira_old, jira_new, project_new, project_old, verbose_logging, delete_dummy_flag, threads
     global recently_updated, max_retries, default_max_retries
-            
+    
     # Check if that Issue available in the Source JIRA Project
     max_id = find_max_id(max_id, project=project_old, jira=jira_old)
     
@@ -1857,7 +1860,7 @@ def create_dummy_issues(total_number, batch_size=100):
         except Exception as e:
             print("[ERROR] Issues can't be created due to '{}'".format(e))
             return (1, data_lst)
-        
+    
     if total_number == 0:
         return
     
@@ -1964,7 +1967,7 @@ def convert_to_issue(new_issue, issuetype):
     global auth, verify, new_issues_ids
     
     session = requests.Session()
-
+    
     url0 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTask.jspa?id=' + new_issue.id
     r = session.get(url=url0, auth=auth, verify=verify)
     soup = BeautifulSoup(r.text, features="lxml")
@@ -2124,7 +2127,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
-
+    
     def get_watchers(jira, key):
         watchers = []
         try:
@@ -2148,7 +2151,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             print("[INFO] File '{}' has been created.".format(filename))
         except:
             print("[ERROR] JSON File can't be created.")
-        
+    
     def get_duration(jira_duration):
         weeks, days, hours, minutes, seconds = (0, 0, 0, 0, 0)
         time_lst = str(jira_duration).split(' ')
@@ -2595,7 +2598,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     return None
                 else:
                     try:
-                        team_value = value[0]
+                        if type(value) != str:
+                            team_value = value[0]
+                        else:
+                            team_value = value
                         if type(team_value) != str:
                             try:
                                 team_value = value[0].value
@@ -2797,9 +2803,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                     data_value.append({"name": None})
                                 else:
                                     try:
-                                        data_value.append({"name": i.name})
+                                        data_value.append({"name": users[0].name})
                                     except:
-                                        data_value.append({"name": i})
+                                        try:
+                                            data_value.append({"name": i.name})
+                                        except:
+                                            data_value.append({"name": i})
                             except:
                                 data_value.append({"name": None})
                     else:
@@ -2870,7 +2879,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     # Fix for Team management JIRA Portfolio Team field - JPOSERVER-2322
     if migrate_teams_check == 1:
         old_team = eval('new_issue.fields.' + issue_details_new[issuetype]['Team']['id'])
-        if issuetype in sub_tasks.keys() or old_team is not None:
+        if json_importer_flag == 1 and data_val[issue_details_new[issuetype]['Team']['id']] != old_team and issuetype not in sub_tasks.keys() and old_team is not None:
+            new_key = new_issue.key
+            delete_issue(new_key)
+            return process_issue(new_key)
+        elif issuetype in sub_tasks.keys() or old_team is not None:
             data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
     
     # Post-processing for Assignee, if issue was converted from Sub-Task
@@ -2886,22 +2899,22 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         data_val['assignee'] = None
     
     # Post-processing for Reporter and Creator for JSON importer case
+    try:
+        if new_issue.fields.assignee.name == old_issue.fields.assignee.name:
+            data_val.pop('assignee', None)
+    except:
+        pass
+    try:
+        if new_issue.fields.reporter.name == old_issue.fields.reporter.name:
+            data_val.pop('reporter', None)
+    except:
+        pass
+    try:
+        if new_issue.fields.priority.name == get_priority(issuetype, old_issue):
+            data_val.pop('priority', None)
+    except:
+        pass
     if json_importer_flag == 1:
-        try:
-            if new_issue.fields.assignee.name == old_issue.fields.assignee.name:
-                data_val.pop('assignee', None)
-        except:
-            pass
-        try:
-            if new_issue.fields.reporter.name == old_issue.fields.reporter.name:
-                data_val.pop('reporter', None)
-        except:
-            pass
-        try:
-            if new_issue.fields.priority.name == get_priority(issuetype, old_issue):
-                data_val.pop('priority', None)
-        except:
-            pass
         try:
             data_val.pop(issue_details_new[issuetype]['Sprint']['id'], None)
         except:
@@ -3031,7 +3044,7 @@ def check_target_project():
         else:
             print("[INFO] New Target project '{}' has been successfully created.".format(project_new))
             print("")
-    
+
 
 def generate_template():
     """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
@@ -3064,7 +3077,7 @@ def generate_template():
     
     print('[START] Template is being generated. Please wait...')
     print('')
-    print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
+    print("[START] Fields configuration downloading from Source '{}' and Target '{}' projects".format(project_old, project_new))
     
     check_global_admin_rights()
     
@@ -3146,10 +3159,10 @@ def find_max_id(key, jira, project):
     max_processing_key = jira.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
     jql_min = 'project = {} order by key ASC'.format(project)
     min_processing_key = jira.search_issues(jql_str=jql_min, maxResults=1, json_result=False)[0].key
-
+    
     if int(key.split('-')[1]) > int(max_processing_key.split('-')[1]):
         key = max_processing_key
-
+    
     try:
         max_issue = jira.issue(key)
         if project in max_issue.key:
@@ -3181,10 +3194,10 @@ def find_min_id(key, jira, project):
     max_processing_key = jira.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
     jql_min = 'project = {} order by key ASC'.format(project)
     min_processing_key = jira.search_issues(jql_str=jql_min, maxResults=1, json_result=False)[0].key
-
+    
     if int(key.split('-')[1]) < int(min_processing_key.split('-')[1]):
         key = min_processing_key
-
+    
     try:
         min_issue = jira.issue(key)
         if project in min_issue.key:
@@ -3268,7 +3281,7 @@ def main_program():
         except Exception as e:
             print("[ERROR] Exception: '{}'.".format(e))
             return (1, key)
-        
+    
     def get_new_board_id():
         global new_board_id, jira_new, project_new, default_board_name
         
@@ -3326,14 +3339,14 @@ def main_program():
     # Starting Program
     print("[START] Migration process has been started. Please wait...")
     print("")
-
+    
     # Check Global Admin Access
     if json_importer_flag == 1:
         check_global_admin_rights()
         check_target_project()
-
+    
     print("[START] Fields configuration downloading from '{}' and '{}' projects".format(project_old, project_new))
-
+    
     try:
         issue_details_old = get_fields_list_by_project(jira_old, project_old)
         issue_details_new = get_fields_list_by_project(jira_new, project_new)
@@ -3404,9 +3417,9 @@ def main_program():
             if including_dependencies_flag == 1:
                 dependencies_jql_parents_new = "project = '{}' AND key >= {} AND key < {} ".format(project_new, start_new_jira_key, max_new_processing_key)
                 jql_dependencies_new = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
-                                   "issueFunction in subtasksOf(\"{}\") OR " \
-                                   "issueFunction in parentsOf(\"{}\") OR " \
-                                   "issueFunction in linkedIssuesOf(\"{}\"))".format(project_new, jql_last_migrated, jql_last_migrated, dependencies_jql_parents_new, jql_last_migrated)
+                                       "issueFunction in subtasksOf(\"{}\") OR " \
+                                       "issueFunction in parentsOf(\"{}\") OR " \
+                                       "issueFunction in linkedIssuesOf(\"{}\"))".format(project_new, jql_last_migrated, jql_last_migrated, dependencies_jql_parents_new, jql_last_migrated)
                 jql_last_migrated = jql_last_migrated + " OR ({}) ".format(jql_dependencies_new)
             get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
             print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
@@ -3422,7 +3435,7 @@ def main_program():
         print("[ERROR] There no issues below '{}'. Exiting...".format(max_processing_key))
         os.system("pause")
         exit()
-
+    
     # Add last updated issues to migration / update process
     if last_updated_date not in ['YYYY-MM-DD', '']:
         try:
@@ -3561,7 +3574,7 @@ def main_program():
                         if i_type in items_lst.keys():
                             for issue in items_lst[i_type]:
                                 json_process_issue(issue)
-                            
+        
         print("[INFO] JSON Importer file(s) have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time))
         print("")
         print("[INFO] Please process JSON files - incrementally all parts in JIRA 'System -> External System Import -> JSON' and continue migration process.")
@@ -3624,8 +3637,10 @@ def main_program():
         status = set_project_as_read_only(JIRA_BASE_URL_OLD, project_old)
         if str(status) != str(200):
             print("[ERROR] Source '{}' project can't be set to Read-Only.".format(project_old))
+            print("")
         else:
             print("[INFO] Source Project has been updated to Read-Only after migration.")
+            print("")
     
     print("[INFO] TOTAL processing time: '{}' seconds.".format(time.time() - start_time))
     print("")
@@ -3689,7 +3704,7 @@ def change_configs():
         last_updated_date = last_updated.get().strip()
         template_project = template_proj.get()
         new_project_name = name_proj.get()
-
+        
         if last_updated_date == 'YYYY-MM-DD':
             last_updated_date = ''
         
@@ -3753,17 +3768,17 @@ def change_configs():
         except:
             print("[ERROR] Number of processes is invalid. Default '1' will be used.")
             pool_size = 1
-
+        
         try:
             template_project = str(template_project).strip()
         except:
             template_project = ''
-
+        
         try:
             new_project_name = str(new_project_name).strip()
         except:
             new_project_name = ''
-
+        
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         save_config()
@@ -3847,7 +3862,7 @@ def change_configs():
     threads_num.delete(0, END)
     threads_num.insert(0, threads)
     threads_num.grid(row=6, column=4, columnspan=1, padx=8)
-
+    
     pool_size = check_similar("pool_size", pool_size)
     
     tk.Label(config_popup, text="Number Processes:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=7, column=3)
@@ -3867,7 +3882,7 @@ def change_configs():
     last_updated.grid(row=8, column=3, columnspan=2, padx=70, stick=W)
     
     tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=9, columnspan=5)
-
+    
     tk.Label(config_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=10, column=0, columnspan=4, stick=W)
     template_proj = tk.Entry(config_popup, width=20, textvariable=template_project)
     template_proj.insert(END, template_project)
@@ -3947,17 +3962,17 @@ def change_mappings_configs():
         if project_new == '':
             print("[WARNING] Target JIRA Project Key is empty. Would be used same as Sourse.")
             project_new = project_old
-            
+        
         try:
             template_project = str(template_project).strip()
         except:
             template_project = ''
-            
+        
         try:
             new_project_name = str(new_project_name).strip()
         except:
             new_project_name = ''
-            
+        
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         save_config()
@@ -3983,14 +3998,14 @@ def change_mappings_configs():
                 return check_similar(field, ' ' + str(value))
         else:
             return value
-
+    
     config_mapping_popup = tk.Tk()
     config_mapping_popup.title("JIRA Migration Tool - Configuration for Mapping Generation.")
     
     JIRA_BASE_URL_OLD = check_similar("JIRA_BASE_URL_OLD", JIRA_BASE_URL_OLD)
     
     tk.Label(config_mapping_popup, text="Please enter Source and Target project for migration (Target Project Key will be same, if empty):", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=0, column=0, columnspan=4, rowspan=1, sticky=W, padx=60)
-
+    
     tk.Label(config_mapping_popup, text="Source JIRA URL:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=1, column=0, rowspan=1)
     source_jira = tk.Entry(config_mapping_popup, width=60, textvariable=JIRA_BASE_URL_OLD)
     source_jira.insert(END, JIRA_BASE_URL_OLD)
@@ -4018,21 +4033,21 @@ def change_mappings_configs():
     target_project.grid(row=2, column=3, padx=7, stick=E)
     
     tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=3, columnspan=4)
-
+    
     template_project = check_similar("template_project", template_project)
-
+    
     tk.Label(config_mapping_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=4, column=1, columnspan=2, stick=W)
     template_proj = tk.Entry(config_mapping_popup, width=20, textvariable=template_project)
     template_proj.insert(END, template_project)
     template_proj.grid(row=4, column=3, padx=7, stick=E)
-
+    
     tk.Label(config_mapping_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=5, column=1, columnspan=2, stick=E, padx=120)
     name_proj = tk.Entry(config_mapping_popup, width=40, textvariable=new_project_name)
     name_proj.insert(END, new_project_name)
     name_proj.grid(row=5, column=2, columnspan=2, padx=7, stick=E)
-
+    
     tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=6, columnspan=4)
-
+    
     tk.Button(config_mapping_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_mapping_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=W, columnspan=4)
     tk.Button(config_mapping_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=E, columnspan=4)
     
@@ -4203,7 +4218,7 @@ if __name__ == "__main__":
             logging.info(string)
             logging.info(string2)
             logging.info(string3)
-
+    
     print("[INFO] Program has started. Please DO NOT CLOSE that window.")
     load_config()
     print("[INFO] Please IGNORE any WARNINGS - the connection issues are covered by Retry logic.")
@@ -4321,7 +4336,7 @@ if __name__ == "__main__":
     process_dependencies = IntVar(value=including_dependencies_flag)
     Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
-
+    
     set_read_only = IntVar(value=set_source_project_read_only)
     Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     set_read_only.trace('w', change_read_only)
