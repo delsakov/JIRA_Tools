@@ -40,6 +40,7 @@ project_new = ''
 template_project = ''
 new_project_name = ''
 team_project_prefix = ''
+read_only_scheme_name = 'ReadOnly'
 
 # JIRA API configs
 JIRA_sprint_api = '/rest/agile/1.0/sprint/'
@@ -50,6 +51,8 @@ JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 JIRA_labelit_api = '/rest/labelit/1.0/items'
 JIRA_create_project_api = '/rest/scriptrunner/latest/custom/createProject'
+JIRA_api_get_permissions_scheme = '/rest/api/2/permissionscheme'
+JIRA_api_assign_permission_scheme = '/rest/api/2/project/{}/permissionscheme'
 headers = {"Content-type": "application/json", "Accept": "application/json"}
 
 # Disabling WARNINGS - hide them from console. All warnings will be covered by program itself.
@@ -158,6 +161,7 @@ including_users_flag = 1
 # Required for creation JSON file - total_data have to be dumped in JSON file for processing from UI.
 multiple_json_data_processing = 0
 json_file_part_num = 1
+set_source_project_read_only = 0
 failed_issues = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
@@ -430,6 +434,25 @@ def calculate_statuses(transitions):
         for status in v:
             statuses_lst.append([k, status, ''])
     return statuses_lst, list(set(issuetypes_lst))
+
+
+def set_project_as_read_only(jira_url, project):
+    global read_only_scheme_name, JIRA_api_get_permissions_scheme, JIRA_api_assign_permission_scheme, headers, auth, verify
+    
+    read_only_scheme_id = None
+    url = jira_url + JIRA_api_get_permissions_scheme
+    r = requests.get(url, auth=auth, headers=headers, verify=verify)
+    permission_schemes_string = r.content.decode('utf-8')
+    permission_schemes_details = json.loads(permission_schemes_string)
+    for p in permission_schemes_details["permissionSchemes"]:
+        if read_only_scheme_name in p["name"]:
+            read_only_scheme_id = p["id"]
+            break
+    
+    url1 = jira_url + JIRA_api_assign_permission_scheme.format(project)
+    body = json.dumps({"id": read_only_scheme_id})
+    r = requests.put(url1, data=body, auth=auth, headers=headers, verify=verify)
+    return r.status_code
 
 
 def prepare_template_data():
@@ -3198,6 +3221,7 @@ def main_program():
     global recently_updated_days, recently_updated, max_id, including_dependencies_flag, already_migrated_set
     global json_importer_flag, headers, JIRA_imported_api, new_board_id, failed_issues, multiple_json_data_processing
     global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes, migrate_teams_check
+    global set_source_project_read_only
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
@@ -3594,6 +3618,14 @@ def main_program():
         delete_extra_issues(max_id)
         print("[INFO] Dummy issues have been deleted/skipped in '{}' seconds.".format(time.time() - start_delete_time))
         print("")
+    
+    # Update Source Project as Read-Only after migration
+    if set_source_project_read_only == 1:
+        status = set_project_as_read_only(JIRA_BASE_URL_OLD, project_old)
+        if str(status) != str(200):
+            print("[ERROR] Source '{}' project can't be set to Read-Only.".format(project_old))
+        else:
+            print("[INFO] Source Project has been updated to Read-Only after migration.")
     
     print("[INFO] TOTAL processing time: '{}' seconds.".format(time.time() - start_time))
     print("")
@@ -4131,6 +4163,11 @@ def change_dependencies(*args):
     including_dependencies_flag = process_dependencies.get()
 
 
+def change_read_only(*args):
+    global set_source_project_read_only
+    set_source_project_read_only = set_read_only.get()
+
+
 def change_migrate_history(*args):
     global json_importer_flag, including_users_flag
     json_importer_flag = process_change_history.get()
@@ -4284,9 +4321,18 @@ if __name__ == "__main__":
     process_dependencies = IntVar(value=including_dependencies_flag)
     Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
+
+    set_read_only = IntVar(value=set_source_project_read_only)
+    Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    set_read_only.trace('w', change_read_only)
     
-    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=24, column=0, pady=8, columnspan=4, rowspan=2)
+    permission_scheme = tk.Entry(main, width=30, textvariable=read_only_scheme_name)
+    permission_scheme.insert(END, read_only_scheme_name)
+    permission_scheme.grid(row=24, column=2, pady=0, sticky=W, columnspan=2, padx=35)
     
-    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=25, column=1, sticky=SE, padx=20, columnspan=3)
+    
+    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=26, column=0, pady=8, columnspan=4, rowspan=2)
+    
+    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=27, column=1, sticky=SE, padx=20, columnspan=3)
     
     tk.mainloop()
