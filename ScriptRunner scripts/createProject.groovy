@@ -14,13 +14,13 @@ import javax.servlet.http.HttpServletRequest
 createProject(httpMethod: "POST", group: ["u_jira_global_admin"]) { MultivaluedMap queryParams, body, HttpServletRequest request ->
     def projectKey = request.getParameter("key")
     def projectName = request.getParameter("name")
-    def projectParentKey = request.getParameter("parent")
-if (projectKey && projectName && projectParentKey) {
+    def templateKey = request.getParameter("parent")
+if (projectKey && templateKey) {
 	
 	def projectManager = ComponentAccessor.getProjectManager()
 	def copyProject = new CopyProject()
     
-	def parentProject = projectManager.getProjectByCurrentKey(projectParentKey)	
+	def parentProject = projectManager.getProjectByCurrentKey(templateKey)	
   	def params = [
       FIELD_SOURCE_PROJECT : parentProject.getKey(),
       FIELD_TARGET_PROJECT : projectKey.toString(),
@@ -34,14 +34,13 @@ if (projectKey && projectName && projectParentKey) {
    		copyProject.doScript(params)
     } 
     catch (Exception ex) {
-   
-    	return Response.ok(new JsonBuilder("Error": ex.message).toString()).build()
+   		return Response.status(404).entity(new JsonBuilder("Error": ex.message).toString()).build()
     }
     
     return Response.ok(new JsonBuilder("Project created": projectKey).toString()).build()
 }
 else {
-    def message = "'key' should be specified as params. Example: .../createProject?key=<NEW_KEY>&name=<NEW PROJECT NAME>&parent=<TEMPLATE PROJECT KEY>"
-    return Response.ok(new JsonBuilder("Error": message).toString()).build()
+    def message = "'key' and 'parent' should be specified as params. Example: .../createProject?key=<NEW_KEY>&parent=<TEMPLATE PROJECT NAME>"
+    return Response.status(401).entity(new JsonBuilder("Error": message).toString()).build()
 }
 }
