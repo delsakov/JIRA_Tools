@@ -2766,7 +2766,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if parent is not None and new_issuetype != issuetype:
             convert_to_subtask(parent, new_issue, sub_tasks[issuetype])
             diff_issuetypes = 0
-    elif old_issue.fields.issuetype.name in old_sub_tasks.keys() and (new_issuetype in sub_tasks.keys() or parent is not None):
+    elif ((old_issue.fields.issuetype.name in old_sub_tasks.keys() and (new_issuetype not in sub_tasks.keys() or parent is not None))
+            or (new_issuetype not in sub_tasks.keys() and parent is not None)):
         if json_importer_flag == 0:
             convert_to_issue(new_issue, issuetype)
             diff_issuetypes = 0
