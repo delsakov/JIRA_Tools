@@ -77,7 +77,7 @@ hyperlink = Font(underline='single', color='0563C1')
 project_tab_color = '32CD32'  # Green
 mandatory_tab_color = 'FA8072'  # Red
 optional_tab_color = 'F4A460'  # Amber
-mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority', 'Links']
+mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']
 hide_tabs = False
 zoom_scale = 100
 wb = Workbook()
@@ -120,7 +120,7 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 # Migration configs
 temp_dir_name = 'Attachments_Temp/'
 mapping_file = ''
-jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link']
+jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged']
 additional_mapping_fields = ['Description', 'Labels', 'Due Date']
 limit_migration_data = 0  # 0 if all
 start_jira_key = 1
@@ -283,13 +283,13 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                 else:
                                     fields_mappings[issuetype.strip()][d[1].strip()] = d[2].split(',')
                         else:
-                            if d[0].strip() in fields_mappings.keys():
-                                if d[2].strip() in fields_mappings[d[0].strip()].keys():
-                                    fields_mappings[d[0].strip()][d[2].strip()].append(d[1].strip())
+                            if d[0] in fields_mappings.keys():
+                                if d[2] in fields_mappings[d[0]].keys():
+                                    fields_mappings[d[0]][d[2]].append(d[1])
                                 else:
-                                    fields_mappings[d[0].strip()][d[2].strip()] = [d[1].strip()]
+                                    fields_mappings[d[0]][d[2]] = [d[1]]
                             else:
-                                fields_mappings[d[0].strip()] = {d[2].strip(): [d[1].strip()]}
+                                fields_mappings[d[0]] = {d[2]: [d[1]]}
                             if d[2] == '' and verbose_logging == 1:
                                 print("[WARNING] The mapping of '{}' field for '{}' Issuetype not found. Field values will be dropped.".format(d[1], d[0]))
                     else:
@@ -490,7 +490,7 @@ def prepare_template_data():
         issue_types_map_lst.append([o_it, ''])
     
     # Fields
-    fields_map_lst = [['Source Issue Type', ' Source Field Name', 'Target Field Name']]
+    fields_map_lst = [['Source Issue Type', 'Source Field Name', 'Target Field Name']]
     for issuetype, fields in issue_details_old.items():
         for field, details in fields.items():
             if details['custom'] is True and field not in jira_system_fields:
@@ -509,7 +509,7 @@ def prepare_template_data():
         f_val = list(set(new_fields_val[:]))
         f_val.sort()
     except:
-        pass
+        f_val = list(new_fields_val[:])
     
     # Statuses
     statuses_map_lst = []
@@ -588,7 +588,7 @@ def prepare_template_data():
         except:
             pass
         default_validation['Statuses'] = '"' + get_str_from_lst(st_val, spacing='') + '"'
-    default_validation['Fields'] = '"' + get_str_from_lst(f_val, spacing='') + '"'
+    default_validation['Fields'] = '"' + get_str_from_lst(f_val, spacing='', stripping=False) + '"'
     new_issuetypes_val = []
     for i in new_issuetypes:
         new_issuetypes_val.append(i)
@@ -736,7 +736,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
         return list(issues_lst)
 
 
-def get_str_from_lst(lst, sep=',', spacing=' '):
+def get_str_from_lst(lst, sep=',', spacing=' ', stripping=True):
     """This function returns list as comma separated string - for exporting in excel"""
     if lst is None:
         return None
@@ -745,7 +745,10 @@ def get_str_from_lst(lst, sep=',', spacing=' '):
     st = ''
     for i in lst:
         if i != '':
-            st += str(i).strip() + sep + spacing
+            if stripping is True:
+                st += str(i).strip() + sep + spacing
+            else:
+                st += str(i) + sep + spacing
     if spacing == ' ':
         st = st[0:-2]
     else:
@@ -1592,7 +1595,7 @@ def get_fields_list_by_project(jira, project):
                                 'allowed values': None if allowed_values == [] else allowed_values,
                                 'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'] if type(issuetype['fields'][field_id]['defaultValue']) == dict else issuetype['fields'][field_id]['defaultValue'][0]['value'],
                                 'validated': True if 'allowedValues' in issuetype['fields'][field_id] else False}
-            issuetype_fields[issuetype_name][field_name.strip()] = field_attributes
+            issuetype_fields[issuetype_name][field_name] = field_attributes
     return issuetype_fields
 
 
@@ -4319,6 +4322,7 @@ if __name__ == "__main__":
     
     tk.Label(main, text="Mapping Template Generation", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=0, column=0, columnspan=2, rowspan=2, sticky=W, padx=80)
     tk.Label(main, text="Step 1", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=0, column=0, columnspan=3, rowspan=2, sticky=W, padx=15)
+    
     tk.Button(main, text='Generate Template', font=("Helvetica", 9, "bold"), command=generate_template, width=20, heigh=2).grid(row=0, column=3, pady=5, rowspan=2, sticky=N)
     
     tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=2, columnspan=4)
