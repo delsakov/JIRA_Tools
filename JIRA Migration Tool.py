@@ -329,7 +329,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
         issuetypes_mappings[k]['issuetypes'] = issues
     
     status_mappings = remove_spaces(status_mappings)
-    fields_mappings = remove_spaces(fields_mappings)
+#     fields_mappings = remove_spaces(fields_mappings)  # Commented to allow processing field names having spaces in the very end, i.e. "Target Date  "
     field_value_mappings = remove_spaces(field_value_mappings)
     print("[END] Mapping data has been successfully processed.")
     print("")
