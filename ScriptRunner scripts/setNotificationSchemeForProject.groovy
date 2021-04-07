@@ -14,22 +14,24 @@ import javax.servlet.http.HttpServletRequest
 setNotificationSchemeForProject(httpMethod: "POST", group: ["u_jira_global_admin"]) { MultivaluedMap queryParams, body, HttpServletRequest request ->
     def projectKey = request.getParameter("key")
     def notificationSchemeName = request.getParameter("schemeName")
+
 if (projectKey && notificationSchemeName) {
     
     def projectManager = ComponentAccessor.getProjectManager();
     def project = projectManager.getProjectByCurrentKey(projectKey);
     def notificationSchemeManager = ComponentAccessor.getNotificationSchemeManager();
-	def notificationScheme = notificationSchemeManager.getSchemeObject(notificationSchemeName);
+    def notificationScheme = notificationSchemeManager.getSchemeObject(notificationSchemeName);
 	
    try {
         notificationSchemeManager.removeSchemesFromProject(project);
-   		notificationSchemeManager.addSchemeToProject(project, notificationScheme);
+   	notificationSchemeManager.addSchemeToProject(project, notificationScheme);
     } 
     catch (Exception ex) {
-   		return Response.status(404).entity(new JsonBuilder("Error": ex.message).toString()).build()
+   	return Response.status(404).entity(new JsonBuilder("Error": ex.message).toString()).build()
     }
     
     return Response.ok(new JsonBuilder("Notification Scheme has been successfully updated.": projectKey).toString()).build()
+	
 }
 else {
     def message = "'key' should be specified as param. Example: .../setNotificationSchemeForProject?key=<TARGET_PROJECT_KEY>&schemeName=<NOTIFICATION_SCHEME_NAME>"
