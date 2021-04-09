@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.1'
+current_version = '2.2'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -198,7 +198,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
     """Function for reading Mapping Excel file and saves all mappings for further processing."""
     global issuetypes_mappings, fields_mappings, status_mappings, field_value_mappings, verbose_logging
     global JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, link_mappings
-    print("[START] Mapping file is opened for processing.")
+    print("[START] Mapping file '{}'is opened for processing.".format(mapping_file))
     
     def remove_spaces(mapping):
         for lev_1, values in mapping.items():
@@ -329,7 +329,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
         issuetypes_mappings[k]['issuetypes'] = issues
     
     status_mappings = remove_spaces(status_mappings)
-#     fields_mappings = remove_spaces(fields_mappings)  # Commented to allow processing field names having spaces in the very end, i.e. "Target Date  "
+    # fields_mappings = remove_spaces(fields_mappings)
     field_value_mappings = remove_spaces(field_value_mappings)
     print("[END] Mapping data has been successfully processed.")
     print("")
@@ -1370,7 +1370,9 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
         for l in new_statuses:
             if l[0] == type and l[1] == status:
                 return status
-        return new_transitions[type][0]
+        default_status = new_transitions[type][0][0]
+        print("[ERROR] Mapping of '{}' Source Status to the correct Target Status hasn't been found! Default '{}' Status would be used instead.".format(status, default_status))
+        return default_status
     
     for n_status, o_statuses in status_mappings[old_issue_type].items():
         for o_status in o_statuses:
@@ -2426,7 +2428,6 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         try:
             params = {"notifyUsers": "false"}
             r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify, params=params)
-            # r = requests.post(url + '?notifyUsers=false', json=data, auth=auth, headers=headers, verify=verify)
             return (r.status_code, r.content)
         except Exception as e:
             print("[ERROR] JSON Importer error: '{}'".format(e))
@@ -3970,7 +3971,7 @@ def change_mappings_configs():
     global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name
     
     def config_save():
-        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name
+        global JIRA_BASE_URL_OLD, project_old, JIRA_BASE_URL_NEW, project_new, template_project, new_project_name, mapping_file
         
         validation_error = 0
         
@@ -3980,7 +3981,7 @@ def change_mappings_configs():
         project_new = target_project.get()
         template_project = template_proj.get()
         new_project_name = name_proj.get()
-        
+        mapping_file = file.get()
         config_mapping_popup.destroy()
         
         try:
@@ -4095,22 +4096,30 @@ def change_mappings_configs():
     target_project = tk.Entry(config_mapping_popup, width=20, textvariable=project_new)
     target_project.insert(END, project_new)
     target_project.grid(row=2, column=3, padx=7, stick=E)
+
+    mapping_file = 'Migration Template for {} project to {} project.xlsx'.format(project_old.strip(), project_new.strip())
     
-    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=3, columnspan=4)
+    tk.Label(config_mapping_popup, text="Template File Name:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=3, column=0, rowspan=1, sticky=W)
+    file = tk.Entry(config_mapping_popup, width=83, textvariable=mapping_file)
+    file.insert(END, mapping_file)
+    file.grid(row=3, column=1, columnspan=2, padx=0)
+    tk.Button(config_mapping_popup, text='Browse', command=load_file, width=15).grid(row=3, column=3, pady=3, padx=8)
+    
+    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=4, columnspan=4)
     
     template_project = check_similar("template_project", template_project)
     
-    tk.Label(config_mapping_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=4, column=1, columnspan=2, stick=W)
+    tk.Label(config_mapping_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=5, column=1, columnspan=2, stick=W)
     template_proj = tk.Entry(config_mapping_popup, width=20, textvariable=template_project)
     template_proj.insert(END, template_project)
-    template_proj.grid(row=4, column=3, padx=7, stick=E)
+    template_proj.grid(row=5, column=3, padx=7, stick=E)
     
-    tk.Label(config_mapping_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=5, column=1, columnspan=2, stick=E, padx=120)
+    tk.Label(config_mapping_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=6, column=1, columnspan=2, stick=E, padx=120)
     name_proj = tk.Entry(config_mapping_popup, width=40, textvariable=new_project_name)
     name_proj.insert(END, new_project_name)
-    name_proj.grid(row=5, column=2, columnspan=2, padx=7, stick=E)
+    name_proj.grid(row=6, column=2, columnspan=2, padx=7, stick=E)
     
-    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=6, columnspan=4)
+    tk.Label(config_mapping_popup, text="____________________________________________________________________________________________________________").grid(row=7, columnspan=4)
     
     tk.Button(config_mapping_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_mapping_popup_close, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=W, columnspan=4)
     tk.Button(config_mapping_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=10, column=0, pady=8, padx=100, sticky=E, columnspan=4)
