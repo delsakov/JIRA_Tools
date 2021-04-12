@@ -2773,7 +2773,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             convert_to_subtask(parent, new_issue, sub_tasks[issuetype])
             diff_issuetypes = 0
     elif ((old_issue.fields.issuetype.name in old_sub_tasks.keys() and (new_issuetype not in sub_tasks.keys() or parent is not None))
-          or (new_issuetype not in sub_tasks.keys() and parent is not None)):
+            or (new_issuetype not in sub_tasks.keys() and parent is not None)):
         if json_importer_flag == 0:
             convert_to_issue(new_issue, issuetype)
             diff_issuetypes = 0
@@ -3403,14 +3403,14 @@ def main_program():
     
     print("[END] Fields configuration successfully processed.")
     print("")
-    
+
     # Check if Target Project should not be re-written by Source Project
     if merge_projects_flag == 1:
         print("[START] Calculating difference in Issue Keys for Target Project.")
         get_shifted_val()
         print("[END] The difference of Issue Keys for Target Project would be: '{}'".format(shifted_by))
         print("")
-    
+
     if migrate_statuses_check == 1 or json_importer_flag == 1:
         get_transitions(project_new, JIRA_BASE_URL_NEW, new=True)
         try:
@@ -3464,7 +3464,7 @@ def main_program():
             max_new_processing_key = find_max_id(get_shifted_key(max_processing_key.replace(project_old, project_new)), jira_new, project_new)
             print("")
             print("[START] Checking for already migrated issues. They will be skipped.")
-            jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {} ".format(project_new, start_new_jira_key, max_new_processing_key)
+            jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR (labels is EMPTY AND key >= {} AND key <= {} ))".format(project_new, start_new_jira_key, max_new_processing_key)
             if including_dependencies_flag == 1:
                 dependencies_jql_parents_new = "project = '{}' AND key >= {} AND key < {} ".format(project_new, start_new_jira_key, max_new_processing_key)
                 jql_dependencies_new = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
@@ -3660,18 +3660,30 @@ def main_program():
     
     # Update and Close Sprints - after migration of issues are done
     start_update_sprints = time.time()
-    
+        
     # Calculating total Number of Issues in OLD JIRA Project
-    if recently_updated == '':
-        recently_updated_check = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
-    jql_total_old = "project = '{}' {}".format(project_old, recently_updated_check)
+    if process_only_last_updated_date_flag == 1:
+        recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
+        max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
+        start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
+        dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
+        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} ".format(project_old, start_jira_key, max_processing_key)
+        jql_dependencies = "project = '{}' AND (issueFunction in epicsOf(\"{}\") OR " \
+                           "issueFunction in subtasksOf(\"{}\") OR " \
+                           "issueFunction in parentsOf(\"{}\") OR " \
+                           "issueFunction in linkedIssuesOf(\"{}\"))".format(project_old, dependencies_jql, dependencies_jql, dependencies_jql_parents, dependencies_jql)
+        recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
+        
+    jql_total_old = "project = '{}' {}".format(project_old, recently_updated)
     total_old = jira_old.search_issues(jql_total_old, startAt=0, maxResults=1, json_result=True)['total']
     
     # Calculating total Number of Migrated Issues to NEW JIRA Project
     jql_total_new = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) ".format(project_new)
     total_new = jira_new.search_issues(jql_total_new, startAt=0, maxResults=1, json_result=True)['total']
+    jql_non_completed_new = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE') ".format(project_new)
+    non_completed_new = jira_new.search_issues(jql_non_completed_new, startAt=0, maxResults=1, json_result=True)['total']
     
-    if int(total_old) == int(total_new) or int(total_new) > int(total_old):
+    if int(total_old) == int(total_new) or int(total_new) > int(total_old) and int(non_completed_new) == 0:
         if migrate_sprints_check == 1 and json_importer_flag == 0:
             migrate_sprints(proj_old=project_old, param='CLOSED')
             migrate_sprints(proj_old=project_old, param='ACTIVE')
@@ -3681,7 +3693,7 @@ def main_program():
             print("[INFO] Issues in Target Project: '{}'".format(total_new))
             print("")
     else:
-        remaining = int(total_old) - int(total_new)
+        remaining = int(non_completed_new)
         print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, remaining if remaining > 0 else 0))
         print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints))
         print("")
@@ -3757,7 +3769,7 @@ def get_shifted_val():
 
 def get_shifted_key(key):
     global shifted_by, merge_projects_flag, merge_projects_start_flag
-    
+
     new_key = key
     if merge_projects_flag == 0 and merge_projects_start_flag == 0:
         return new_key
@@ -3865,13 +3877,13 @@ def change_configs():
         
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
-        
+
         last_updated_main.delete(0, END)
         last_updated_main.insert(0, last_updated_date)
         
         save_config()
         config_popup.quit()
-    
+
     def config_popup_close():
         config_popup.destroy()
         config_popup.quit()
@@ -4119,7 +4131,7 @@ def change_mappings_configs():
     target_project = tk.Entry(config_mapping_popup, width=20, textvariable=project_new)
     target_project.insert(END, project_new)
     target_project.grid(row=2, column=3, padx=7, stick=E)
-    
+
     mapping_file = 'Migration Template for {} project to {} project.xlsx'.format(project_old.strip(), project_new.strip())
     
     tk.Label(config_mapping_popup, text="Template File Name:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=150).grid(row=3, column=0, rowspan=1, sticky=W)
@@ -4357,7 +4369,7 @@ def change_process_last_updated_date(*args):
 def check_similar(field, value):
     """ This function required for fixing same valu duplication issue for second Tk window """
     global shifted_by, shifted_key_val, last_updated_date, read_only_scheme_name, recently_updated_days
-    
+
     fields = {"shifted_by": shifted_by,
               "shifted_key_val": shifted_key_val,
               "last_updated_date": last_updated_date,
@@ -4450,7 +4462,7 @@ if __name__ == "__main__":
     process_metadata = IntVar(value=migrate_metadata_check)
     Checkbutton(main, text="Migrate Metadata (field values) for Issues.", font=("Helvetica", 9, "italic"), variable=process_metadata).grid(row=9, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_metadata.trace('w', change_migrate_metadata)
-    
+
     process_attachments = IntVar(value=migrate_attachments_check)
     Checkbutton(main, text="Migrate all Attachments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_attachments).grid(row=10, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_attachments.trace('w', change_migrate_attachments)
@@ -4478,7 +4490,7 @@ if __name__ == "__main__":
     force_update = IntVar(value=force_update_flag)
     Checkbutton(main, text="force update", font=("Helvetica", 9, "italic"), variable=force_update).grid(row=14, column=1, sticky=E, padx=40, columnspan=4, pady=0)
     force_update.trace('w', change_force_update)
-    
+
     tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=7, column=3, pady=4, rowspan=3)
     
     tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=15, columnspan=4)
@@ -4520,9 +4532,9 @@ if __name__ == "__main__":
     process_last_updated = IntVar(value=last_updated_days_check)
     Checkbutton(main, text="ONLY migrate issues updated or created within the last number of days:", font=("Helvetica", 9, "italic"), variable=process_last_updated).grid(row=23, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     process_last_updated.trace('w', change_process_last_updated)
-    
+
     recently_updated_days = check_similar("recently_updated_days", recently_updated_days)
-    
+
     days = tk.Entry(main, width=5, textvariable=recently_updated_days)
     days.insert(END, recently_updated_days)
     days.grid(row=23, column=1, pady=0, sticky=W, columnspan=3, padx=24)
@@ -4530,29 +4542,29 @@ if __name__ == "__main__":
     process_dependencies = IntVar(value=including_dependencies_flag)
     Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
-    
+
     process_only_last_updated_date = IntVar(value=process_only_last_updated_date_flag)
     Checkbutton(main, text="Force update issues changed after that date, i.e. 'last updated' >=  :", font=("Helvetica", 9, "italic"), variable=process_only_last_updated_date).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     process_only_last_updated_date.trace('w', change_process_last_updated_date)
-    
+
     if last_updated_date == '':
         last_updated_date = 'YYYY-MM-DD'
-    
+
     last_updated_date = check_similar("last_updated_date", last_updated_date)
     
     last_updated_main = tk.Entry(main, width=15, textvariable=last_updated_date)
     last_updated_main.delete(0, END)
     last_updated_main.insert(END, last_updated_date)
     last_updated_main.grid(row=24, column=1, columnspan=3, padx=0, stick=W)
-    
+
     merge_projects_start = IntVar(value=merge_projects_start_flag)
     Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=25, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     merge_projects_start.trace('w', change_merge_project_start)
     
     tk.Label(main, text="OR", font=("Helvetica", 9, "italic")).grid(row=25, column=0, columnspan=4, sticky=W, padx=362)
-    
+
     shifted_by = check_similar("shifted_by", shifted_by)
-    
+
     start_num = tk.Entry(main, width=7, textvariable=shifted_by)
     start_num.insert(END, shifted_by)
     start_num.grid(row=25, column=0, pady=0, sticky=W, columnspan=4, padx=312)
@@ -4560,9 +4572,9 @@ if __name__ == "__main__":
     merge_projects = IntVar(value=merge_projects_flag)
     Checkbutton(main, text="Shifting Starting Key from max in Target Project by:", font=("Helvetica", 9, "italic"), variable=merge_projects).grid(row=25, column=0, sticky=E, padx=150, columnspan=4, pady=0)
     merge_projects.trace('w', change_merge_project)
-    
+
     shifted_key_val = check_similar("shifted_key_val", shifted_key_val)
-    
+
     shift_num = tk.Entry(main, width=10, textvariable=shifted_key_val)
     shift_num.insert(END, shifted_key_val)
     shift_num.grid(row=25, column=2, pady=0, sticky=E, columnspan=3, padx=82)
@@ -4570,7 +4582,7 @@ if __name__ == "__main__":
     set_read_only = IntVar(value=set_source_project_read_only)
     Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     set_read_only.trace('w', change_read_only)
-    
+
     read_only_scheme_name = check_similar("read_only_scheme_name", read_only_scheme_name)
     
     permission_scheme = tk.Entry(main, width=30, textvariable=read_only_scheme_name)
