@@ -1,3 +1,8 @@
+# This Tool has been created by Dmitry Elsakov
+# The main source code has been created over weekends and distributed over GPL-3.0 License
+# The license details could be found here: https://github.com/delsakov/JIRA_Tools/
+# Please do not change notice above and copyright
+
 from jira import JIRA
 from tkinter.filedialog import asksaveasfilename
 import os
@@ -72,12 +77,24 @@ def get_fields_list_by_project(jira, project):
                         allowed_values.append(i['name'])
                     elif 'value' in i:
                         allowed_values.append(i['value'])
+                        default_val = None
+            
+            if issuetype['fields'][field_id]['hasDefaultValue'] is not False:
+                if 'name' in issuetype['fields'][field_id]['defaultValue']:
+                    default_val = issuetype['fields'][field_id]['defaultValue']['name']
+                elif type(issuetype['fields'][field_id]['defaultValue']) == dict:
+                    default_val = issuetype['fields'][field_id]['defaultValue']['value']
+                elif type(issuetype['fields'][field_id]['defaultValue']) == list:
+                    default_val = issuetype['fields'][field_id]['defaultValue'][0]['value']
+                else:
+                    default_val = issuetype['fields'][field_id]['defaultValue']
+            
             field_attributes = {'id': field_id, 'required': issuetype['fields'][field_id]['required'],
                                 'custom': retrieve_custom_field(field_id),
                                 'type': issuetype['fields'][field_id]['schema']['type'],
                                 'custom type': None if 'custom' not in issuetype['fields'][field_id]['schema'] else issuetype['fields'][field_id]['schema']['custom'].replace('com.atlassian.jira.plugin.system.customfieldtypes:', ''),
                                 'allowed values': None if allowed_values == [] else allowed_values,
-                                'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'] if type(issuetype['fields'][field_id]['defaultValue']) == dict else issuetype['fields'][field_id]['defaultValue'][0]['value'],
+                                'default value': default_val,
                                 'validated': True if 'allowedValues' in issuetype['fields'][field_id] else False}
             issuetype_fields[issuetype_name][field_name] = field_attributes
     return issuetype_fields
