@@ -80,14 +80,20 @@ def get_fields_list_by_project(jira, project):
             
             default_val = None
             if issuetype['fields'][field_id]['hasDefaultValue'] is not False:
-                if 'name' in issuetype['fields'][field_id]['defaultValue']:
+                if type(issuetype['fields'][field_id]['defaultValue']) == float:
+                    default_val = str(issuetype['fields'][field_id]['defaultValue'])
+                elif 'name' in issuetype['fields'][field_id]['defaultValue']:
                     default_val = issuetype['fields'][field_id]['defaultValue']['name']
                 elif type(issuetype['fields'][field_id]['defaultValue']) == dict:
                     default_val = issuetype['fields'][field_id]['defaultValue']['value']
                 elif type(issuetype['fields'][field_id]['defaultValue']) == list:
-                    default_val = issuetype['fields'][field_id]['defaultValue'][0]['value']
+                    try:
+                        default_val = issuetype['fields'][field_id]['defaultValue'][0]['value']
+                    except:
+                        default_val = issuetype['fields'][field_id]['defaultValue'][0]
                 else:
                     default_val = issuetype['fields'][field_id]['defaultValue']
+
             
             field_attributes = {'id': field_id, 'required': issuetype['fields'][field_id]['required'],
                                 'custom': retrieve_custom_field(field_id),
