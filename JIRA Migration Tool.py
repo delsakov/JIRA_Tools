@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.3'
+current_version = '2.4'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -720,7 +720,6 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     params = [(jira, jql, block_num * block_size, block_size) for block_num in range(0, total // block_size + 1)]
     
     if types is not None and sprint is None:
-        print("")
         print("[START] Issues loading from Source project was started. It could take some time... Please wait...")
         max_retries = default_max_retries
         threads_processing(issue_list_update, params)
@@ -1232,6 +1231,9 @@ def migrate_attachments(old_issue, new_issue, retry=True):
             except:
                 pass
     
+    if not os.path.exists(temp_dir_name):
+        create_temp_folder(temp_dir_name)
+    
     try:
         if old_issue.fields.attachment:
             for attachment in old_issue.fields.attachment:
@@ -1592,12 +1594,24 @@ def get_fields_list_by_project(jira, project):
                         allowed_values.append(i['name'])
                     elif 'value' in i:
                         allowed_values.append(i['value'])
+
+            default_val = None
+            if issuetype['fields'][field_id]['hasDefaultValue'] is not False:
+                if 'name' in issuetype['fields'][field_id]['defaultValue']:
+                    default_val = issuetype['fields'][field_id]['defaultValue']['name']
+                elif type(issuetype['fields'][field_id]['defaultValue']) == dict:
+                    default_val = issuetype['fields'][field_id]['defaultValue']['value']
+                elif type(issuetype['fields'][field_id]['defaultValue']) == list:
+                    default_val = issuetype['fields'][field_id]['defaultValue'][0]['value']
+                else:
+                    default_val = issuetype['fields'][field_id]['defaultValue']
+
             field_attributes = {'id': field_id, 'required': issuetype['fields'][field_id]['required'],
                                 'custom': retrieve_custom_field(field_id),
                                 'type': issuetype['fields'][field_id]['schema']['type'],
                                 'custom type': None if 'custom' not in issuetype['fields'][field_id]['schema'] else issuetype['fields'][field_id]['schema']['custom'].replace('com.atlassian.jira.plugin.system.customfieldtypes:', ''),
                                 'allowed values': None if allowed_values == [] else allowed_values,
-                                'default value': None if issuetype['fields'][field_id]['hasDefaultValue'] is False else issuetype['fields'][field_id]['defaultValue']['name'] if 'name' in issuetype['fields'][field_id]['defaultValue'] else issuetype['fields'][field_id]['defaultValue']['value'] if type(issuetype['fields'][field_id]['defaultValue']) == dict else issuetype['fields'][field_id]['defaultValue'][0]['value'],
+                                'default value': default_val,
                                 'validated': True if 'allowedValues' in issuetype['fields'][field_id] else False}
             issuetype_fields[issuetype_name][field_name] = field_attributes
     return issuetype_fields
@@ -3694,8 +3708,11 @@ def main_program():
             print("")
     else:
         remaining = int(non_completed_new)
-        print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, remaining if remaining > 0 else 0))
-        print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints))
+        if json_importer_flag == 0 and multiple_json_data_processing == 0:
+            print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, remaining if remaining > 0 else 0))
+            print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints))
+        else:
+            print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'.".format(project_old, remaining if remaining > 0 else 0))
         print("")
     
     # Delete issues with Summary = 'Dummy Issue'
