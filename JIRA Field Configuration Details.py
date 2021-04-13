@@ -77,8 +77,8 @@ def get_fields_list_by_project(jira, project):
                         allowed_values.append(i['name'])
                     elif 'value' in i:
                         allowed_values.append(i['value'])
-                        default_val = None
             
+            default_val = None
             if issuetype['fields'][field_id]['hasDefaultValue'] is not False:
                 if 'name' in issuetype['fields'][field_id]['defaultValue']:
                     default_val = issuetype['fields'][field_id]['defaultValue']['name']
