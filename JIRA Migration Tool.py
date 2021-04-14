@@ -606,15 +606,28 @@ def prepare_template_data():
     return template_excel
 
 
-def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_result=limit_migration_data):
+def get_new_issuetype(old_issuetype):
+    global issuetypes_mappings
+
+    for issuetype, details in issuetypes_mappings.items():
+        if old_issuetype in details['issuetypes']:
+            return issuetype
+    
+
+def get_old_issuetype(new_issuetype):
+    global issuetypes_mappings
+    return issuetypes_mappings[new_issuetype]['issuetypes'][0]
+    
+
+def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_migrated=False, max_result=limit_migration_data):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
     global items_lst, limit_migration_data, verbose_logging, max_retries, default_max_retries, already_migrated_set
-    global skip_migrated_flag, issues_lst
+    global skip_migrated_flag, issues_lst, issuetypes_mappings
     
     def sprint_update(param):
         global items_lst, old_sprints, issue_details_old, skip_migrated_flag, already_migrated_set, JIRA_board_api, headers
         
-        jira, jql, start_idx, max_res = param
+        jira, non_migrated, jql, start_idx, max_res = param
         sprint_field_id = issue_details_old['Story']['Sprint']['id']
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields=eval("'issuetype," + sprint_field_id + "'"))
         try:
@@ -660,18 +673,22 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     def issue_list_update(param):
         global items_lst, skip_migrated_flag, already_migrated_set
         
-        jira, jql, start_idx, max_res = param
+        jira, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields='issuetype')
         
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set:
-                    continue
-                if issue.fields.issuetype.name not in items_lst.keys():
-                    items_lst[issue.fields.issuetype.name] = set()
+                if non_migrated is False:
+                    if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set:
+                        continue
+                    if issue.fields.issuetype.name not in items_lst.keys():
+                        items_lst[issue.fields.issuetype.name] = set()
                     items_lst[issue.fields.issuetype.name].add(issue.key)
                 else:
-                    items_lst[issue.fields.issuetype.name].add(issue.key)
+                    old_issue_type = get_old_issuetype(issue.fields.issuetype.name)
+                    if old_issue_type not in items_lst.keys():
+                        items_lst[old_issue_type] = set()
+                    items_lst[old_issue_type].add(get_shifted_key(issue.key, reversed=True))
             return (0, param)
         except:
             return (1, param)
@@ -679,7 +696,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     def migrated_update(param):
         global skip_migrated_flag, already_migrated_set, project_old, project_new
         
-        jira, jql, start_idx, max_res = param
+        jira, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
         
         if skip_migrated_flag == 0:
@@ -694,7 +711,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     def issue_list_upload(param):
         global issues_lst, skip_migrated_flag, already_migrated_set
         
-        jira, jql, start_idx, max_res = param
+        jira, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
         try:
             for issue in issues:
@@ -717,10 +734,9 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, max_res
     if total == 0:
         return None
     
-    params = [(jira, jql, block_num * block_size, block_size) for block_num in range(0, total // block_size + 1)]
+    params = [(jira, non_migrated, jql, block_num * block_size, block_size) for block_num in range(0, total // block_size + 1)]
     
     if types is not None and sprint is None:
-        print("[START] Issues loading from Source project was started. It could take some time... Please wait...")
         max_retries = default_max_retries
         threads_processing(issue_list_update, params)
     elif sprint is not None:
@@ -1319,10 +1335,8 @@ def migrate_status(new_issue, old_issue):
     if new_status == '':
         return
     graph = {}
-    for issuetype, details in issuetypes_mappings.items():
-        if issue_type in details['issuetypes']:
-            new_issue_type = issuetype
-            break
+
+    new_issue_type = get_new_issuetype(issue_type)
     
     for t in new_transitions[new_issue_type]:
         if t[0].upper() in graph.keys():
@@ -1400,10 +1414,7 @@ def process_issue(key):
             old_issue = jira_old.issue(key, expand="changelog")
             if json_importer_flag == 1 or migrate_metadata_check == 1:
                 issue_type = old_issue.fields.issuetype.name
-                for issuetype, details in issuetypes_mappings.items():
-                    if issue_type in details['issuetypes']:
-                        new_issue_type = issuetype
-                        break
+                new_issue_type = get_new_issuetype(issue_type)
         except:
             try:
                 if json_importer_flag == 0:
@@ -3301,10 +3312,7 @@ def main_program():
             try:
                 old_issue = jira_old.issue(key, expand="changelog")
                 issue_type = old_issue.fields.issuetype.name
-                for issuetype, details in issuetypes_mappings.items():
-                    if issue_type in details['issuetypes']:
-                        new_issue_type = issuetype
-                        break
+                new_issue_type = get_new_issuetype(issue_type)
                 new_status = None
                 
                 try:
@@ -3560,8 +3568,14 @@ def main_program():
     if migrate_attachments_check == 1:
         create_temp_folder(temp_dir_name)
     
-    # Sprints migration check
+    # Sprints / issues migration check
     start_issues_time = time.time()
+    print("[START] Issues loading from Source project was started. It could take some time... Please wait...")
+    
+    if skip_migrated_flag == 1:
+        jql_non_migrated = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE')".format(project_new)
+        get_issues_by_jql(jira_new, jql=jql_non_migrated, types=True, non_migrated=True)
+        
     if migrate_sprints_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0:
         start_sprints_time = time.time()
         if old_board_id == 0:
@@ -3742,8 +3756,6 @@ def main_program():
     print("[INFO] TOTAL processing time: '{}' seconds.".format(time.time() - start_time))
     print("")
     
-    
-    
     print("[INFO] Migration successfully complete.")
     print("")
     os.system("pause")
@@ -3791,13 +3803,16 @@ def get_shifted_val():
         shifted_by = int(shifted_key_val) + int(max_processing_key.split('-')[1])
 
 
-def get_shifted_key(key):
+def get_shifted_key(key, reversed=False):
     global shifted_by, merge_projects_flag, merge_projects_start_flag
 
     new_key = key
     if merge_projects_flag == 0 and merge_projects_start_flag == 0:
         return new_key
-    new_id = int(key.split('-')[1]) + int(shifted_by)
+    if reversed is False:
+        new_id = int(key.split('-')[1]) + int(shifted_by)
+    else:
+        new_id = int(key.split('-')[1]) - int(shifted_by)
     new_project = str(key.split('-')[0])
     new_key = str(new_project) + '-' + str(new_id)
     return new_key
