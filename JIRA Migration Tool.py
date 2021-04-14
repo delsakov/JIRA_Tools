@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.4'
+current_version = '2.5'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -77,7 +77,7 @@ hyperlink = Font(underline='single', color='0563C1')
 project_tab_color = '32CD32'  # Green
 mandatory_tab_color = 'FA8072'  # Red
 optional_tab_color = 'F4A460'  # Amber
-mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority']
+mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority', 'Links']
 hide_tabs = False
 zoom_scale = 100
 wb = Workbook()
@@ -1571,6 +1571,10 @@ def get_fields_list_by_project(jira, project):
                 return field['custom']
     
     proj = auth_jira.project(project)
+    if proj.archived is True:
+        print("[ERROR] Project '{}' is ARCHIVED.".format(project))
+        return {}
+
     try:
         project_fields = auth_jira.createmeta(projectKeys=proj, expand='projects.issuetypes.fields')
         is_types = project_fields['projects'][0]['issuetypes']
@@ -1610,7 +1614,6 @@ def get_fields_list_by_project(jira, project):
                         default_val = issuetype['fields'][field_id]['defaultValue'][0]
                 else:
                     default_val = issuetype['fields'][field_id]['defaultValue']
-
 
             field_attributes = {'id': field_id, 'required': issuetype['fields'][field_id]['required'],
                                 'custom': retrieve_custom_field(field_id),
@@ -3482,7 +3485,6 @@ def main_program():
         try:
             start_new_jira_key = find_min_id(get_shifted_key(start_jira_key.replace(project_old, project_new)), jira_new, project_new)
             max_new_processing_key = find_max_id(get_shifted_key(max_processing_key.replace(project_old, project_new)), jira_new, project_new)
-            print("")
             print("[START] Checking for already migrated issues. They will be skipped.")
             jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR (labels is EMPTY AND key >= {} AND key <= {} ))".format(project_new, start_new_jira_key, max_new_processing_key)
             if including_dependencies_flag == 1:
@@ -4332,6 +4334,11 @@ def change_read_only(*args):
     set_source_project_read_only = set_read_only.get()
 
 
+def change_jsons(*args):
+    global multiple_json_data_processing
+    multiple_json_data_processing = process_jsons.get()
+
+
 def change_merge_project(*args):
     global merge_projects_flag, merge_projects_start_flag, skip_migrated_flag
     merge_projects_flag = merge_projects.get()
@@ -4384,9 +4391,6 @@ def change_process_last_updated_date(*args):
     else:
         force_update_flag = 0
         force_update.set(force_update_flag)
-
-
-# def
 
 
 def check_similar(field, value):
@@ -4487,19 +4491,19 @@ if __name__ == "__main__":
     process_metadata.trace('w', change_migrate_metadata)
 
     process_attachments = IntVar(value=migrate_attachments_check)
-    Checkbutton(main, text="Migrate all Attachments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_attachments).grid(row=10, sticky=W, padx=70, column=0, columnspan=3, pady=0)
+    Checkbutton(main, text="Migrate Attachments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_attachments).grid(row=10, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_attachments.trace('w', change_migrate_attachments)
     
     process_comments = IntVar(value=migrate_comments_check)
-    Checkbutton(main, text="Migrate all Comments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_comments).grid(row=11, sticky=W, padx=70, column=0, columnspan=3, pady=0)
+    Checkbutton(main, text="Migrate Comments from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_comments).grid(row=11, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_comments.trace('w', change_migrate_comments)
     
     process_links = IntVar(value=migrate_links_check)
-    Checkbutton(main, text="Migrate all Links from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_links).grid(row=12, sticky=W, padx=70, column=0, columnspan=3, pady=0)
+    Checkbutton(main, text="Migrate Links from Source JIRA issues.", font=("Helvetica", 9, "italic"), variable=process_links).grid(row=12, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_links.trace('w', change_migrate_links)
     
     process_statuses = IntVar(value=migrate_statuses_check)
-    Checkbutton(main, text="Update all Statuses / Resolutions from Source JIRA issues (Project Admin access required).", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=13, sticky=W, padx=70, column=0, columnspan=3, pady=0)
+    Checkbutton(main, text="Update Statuses / Resolutions from Source JIRA issues (Project Admin access required).", font=("Helvetica", 9, "italic"), variable=process_statuses).grid(row=13, sticky=W, padx=70, column=0, columnspan=3, pady=0)
     process_statuses.trace('w', change_migrate_statuses)
     
     process_change_history = IntVar(value=json_importer_flag)
@@ -4563,11 +4567,11 @@ if __name__ == "__main__":
     days.grid(row=23, column=1, pady=0, sticky=W, columnspan=3, padx=24)
     
     process_dependencies = IntVar(value=including_dependencies_flag)
-    Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links)", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
+    Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links).", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
 
     process_only_last_updated_date = IntVar(value=process_only_last_updated_date_flag)
-    Checkbutton(main, text="Force update issues changed after that date, i.e. 'last updated' >=  :", font=("Helvetica", 9, "italic"), variable=process_only_last_updated_date).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Force Delta processing after date, i.e. 'last updated' >=  :", font=("Helvetica", 9, "italic"), variable=process_only_last_updated_date).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     process_only_last_updated_date.trace('w', change_process_last_updated_date)
 
     if last_updated_date == '':
@@ -4578,8 +4582,12 @@ if __name__ == "__main__":
     last_updated_main = tk.Entry(main, width=15, textvariable=last_updated_date)
     last_updated_main.delete(0, END)
     last_updated_main.insert(END, last_updated_date)
-    last_updated_main.grid(row=24, column=1, columnspan=3, padx=0, stick=W)
+    last_updated_main.grid(row=24, column=0, columnspan=4, padx=340, stick=W)
 
+    process_jsons = IntVar(value=multiple_json_data_processing)
+    Checkbutton(main, text="Create JSON files instead of API calls.", font=("Helvetica", 9, "italic"), variable=process_jsons).grid(row=24, column=1, sticky=W, padx=55, columnspan=3, pady=0)
+    process_jsons.trace('w', change_jsons)
+    
     merge_projects_start = IntVar(value=merge_projects_start_flag)
     Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=25, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     merge_projects_start.trace('w', change_merge_project_start)
