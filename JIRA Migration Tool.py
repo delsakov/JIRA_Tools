@@ -12,6 +12,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
 from sys import exit
 import logging
+import traceback
 from tkinter import *
 from tkinter.filedialog import askopenfilename
 import tkinter as tk
@@ -1424,11 +1425,28 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
     return None
 
 
+def get_parent_for_subtask(issue, issue_type):
+    global issue_details_old
+    
+    parent = None
+    try:
+        parent = eval('old_issue.fields.' + issue_details_old[issue_type]['Epic Link']['id'])
+        return parent
+    except:
+        pass
+    try:
+        parent = eval('old_issue.fields.' + issue_details_old[issue_type]['Parent Link']['id'])
+        return parent
+    except:
+        return parent
+
+
 def process_issue(key):
+    '''Main migration Function - issue migration processing here.'''
     global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
     global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old
-    global multiple_json_data_processing, verbose_logging, force_update_flag
+    global multiple_json_data_processing, verbose_logging, force_update_flag, max_retries, default_max_retries
     
     try:
         new_issue_type = ''
@@ -1458,21 +1476,31 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        try:
-                            parent = eval('old_issue.fields.' + issue_details_old[old_issue.fields.issuetype.name]['Epic Link']['id'])
-                        except:
+                        parent = get_parent_for_subtask(old_issue, issue_type)
+                        if parent is None:
                             print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                            delete_issue(new_issue_key)
                             return (0, key)
                     try:
                         parent_issue = jira_new.issue(parent)
                     except:
                         print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                        delete_issue(new_issue_key)
                         return (0, key)
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                elif new_issue_type in sub_tasks.keys():
+                    try:
+                        parent_field = old_issue.fields.parent
+                    except:
+                        delete_issue(new_issue_key)
+                        parent_field = old_issue.fields.parent
                 if force_update_flag == 1:
-                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                    sleep(2)
+                    if new_issue_type in sub_tasks.keys():
+                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
+                    else:
+                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                    sleep(1)
         except Exception as e:
             if json_importer_flag == 0:
                 print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
@@ -1491,10 +1519,10 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        try:
-                            parent = eval('old_issue.fields.' + issue_details_old[old_issue.fields.issuetype.name]['Epic Link']['id'])
-                        except:
+                        parent = get_parent_for_subtask(old_issue, issue_type)
+                        if parent is None:
                             print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
+                            delete_issue(new_issue_key)
                             return (0, key)
                     try:
                         parent_issue = jira_new.issue(parent)
@@ -1516,7 +1544,7 @@ def process_issue(key):
                         sleep(1)
                         n -= 1
                         if n < 0:
-                            if new_issue.key not in already_processed_json_importer_issues:
+                            if new_issue_key not in already_processed_json_importer_issues:
                                 status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
                             try:
                                 new_issue = jira_new.issue(new_issue_key, expand="changelog")
@@ -1559,8 +1587,10 @@ def process_issue(key):
             pass
         return (0, key)
     except Exception as e:
-        if verbose_logging == 1:
+        if max_retries == default_max_retries:
             print("[ERROR] Exception while processing '{}' issue: '{}'.".format(key, e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
         return (1, key)
 
 
@@ -2203,6 +2233,17 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, max_json_file_size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
     
+    def check_status(new_status, new_issue_type):
+        global new_transitions
+        
+        default_status = new_transitions[new_issue_type][0][0]
+        for statuses in new_transitions[new_issue_type]:
+            for status in statuses:
+                if new_status.upper() == status.upper():
+                    return status
+        print("[ERROR] Provided status '{}' in mapping file not found for '{}' Issue Type. Default status '{}' would be used instead.".format(new_status, new_issue_type, default_status))
+        return default_status
+    
     def get_watchers(jira, key):
         watchers = []
         try:
@@ -2450,7 +2491,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     if migrate_metadata_check == 1:
         if subtask is None:
             if new_status is not None:
-                project_issue["status"] = new_status
+                project_issue["status"] = check_status(new_status, new_issue_type)
             project_issue["resolutionDate"] = old_issue.fields.resolutiondate
             project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
         project_issue["priority"] = get_priority(new_issue_type, old_issue)
@@ -2576,7 +2617,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 return value
     
     def get_old_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype, data_val={}):
-        global fields_mappings, issue_details_old, issue_details_new
+        global fields_mappings, issue_details_old, issue_details_new, max_retries, default_max_retries
         value = None
         concatenated_value = None
         
@@ -2591,6 +2632,19 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value = eval('old_issue.fields.' + field.strip())
                 except:
                     value = None
+            if value is None:
+                try:
+                    temp = issue_details_old[old_issuetype][field]['type']
+                except:
+                    if max_retries == default_max_retries:
+                        print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Source Project. Please check for extra spaces missing.".format(field, old_issuetype))
+                        print("[INFO] Available fields for the Source Project's '{}' issuetype are: '{}'".format(old_issuetype, issue_details_old[old_issuetype].keys()))
+                try:
+                    temp = issue_details_new[new_issuetype][new_field]['type']
+                except:
+                    if max_retries == default_max_retries:
+                        print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Target Project. Please check for extra spaces missing.".format(new_field, new_issuetype))
+                        print("[INFO] Available fields for the Target Project's '{}' issuetype are: '{}'".format(new_issuetype, issue_details_new[new_issuetype].keys()))
             if issue_details_old[old_issuetype][field]['type'] == 'string' and issue_details_old[old_issuetype][field]['custom type'] == 'textfield' and issue_details_old[old_issuetype][field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
                 try:
                     value = value.replace('\n', '').replace('\t', ' ')
@@ -2822,7 +2876,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         diff_issuetypes = 1
     # Checking for Sub-Task and convert to Sub-Task if necessary
     if issuetype in sub_tasks.keys():
-        parent_field = old_issue.fields.parent
+        try:
+            parent_field = old_issue.fields.parent
+        except:
+            parent_field = None
         parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
         if parent is not None and new_issuetype != issuetype:
             convert_to_subtask(parent, new_issue, sub_tasks[issuetype])
@@ -2973,9 +3030,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 old_team = get_team_name(old_team).upper()
         except:
             old_team = None
-        if new_existent_team == new_team or new_existent_team == old_team:
+        if new_existent_team == new_team or new_existent_team == old_team or issuetype in sub_tasks.keys():
             data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
-        elif json_importer_flag == 1 and issuetype not in sub_tasks.keys() and new_team != old_team and old_team is not None:
+        elif json_importer_flag == 1 and new_team != old_team and old_team is not None:
             new_key = new_issue.key
             delete_issue(new_key)
             return process_issue(old_issue.key.replace(project_old, project_new))
@@ -3725,6 +3782,7 @@ def main_program():
         print("[INFO] Migration process will be continued.")
         print("")
     
+    # Main migration process starts here
     for i in range(4):
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] == str(i):
