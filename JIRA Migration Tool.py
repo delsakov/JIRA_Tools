@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.6'
+current_version = '2.7'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -48,6 +48,7 @@ JIRA_sprint_api = '/rest/agile/1.0/sprint/'
 JIRA_core_api = '/rest/api/2/issue/'
 JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
+JIRA_status_api = '/rest/api/2/status'
 JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 JIRA_labelit_api = '/rest/labelit/1.0/items'
@@ -121,8 +122,8 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 temp_dir_name = 'Attachments_Temp/'
 log_file = './MIGRATION_TOOL_OUT.txt'
 mapping_file = ''
-jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged']
-additional_mapping_fields = ['Description', 'Labels', 'Due Date']
+jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end']
+additional_mapping_fields = ['Description', 'Labels', 'Due Date', 'Target start', 'Target end']
 limit_migration_data = 0  # 0 if all
 start_jira_key = 1
 create_remote_link_for_old_issue = 0
@@ -167,6 +168,7 @@ set_source_project_read_only = 0
 json_importer_flag = 1
 including_users_flag = 1
 process_only_last_updated_date_flag = 0
+replace_complete_statuses_flag = 1
 
 # Required for creation JSON file - total_data have to be dumped in JSON file for processing from UI.
 multiple_json_data_processing = 0
@@ -193,6 +195,8 @@ link_mappings = {}
 # Transitions mapping - for status changes
 old_transitions = {}
 new_transitions = {}
+old_statuses = {}
+new_statuses = {}
 
 
 # Functions list
@@ -339,6 +343,8 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 def get_transitions(project, jira_url, new=False):
     global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify
+    global replace_complete_statuses_flag
+    
     print("[START] Retrieving Transitions and Statuses for {} '{}' project from JIRA.".format('Target' if new is True else 'Source', project))
     
     statuses_lst = []
@@ -398,6 +404,10 @@ def get_transitions(project, jira_url, new=False):
             old_transitions = transitions
         else:
             new_transitions = transitions
+        
+        if replace_complete_statuses_flag == 1:
+            get_statuses(jira_url=jira_url, new=new)
+        
         print("[END] Transitions and Statuses for {} '{}' project has been successfully retrieved.".format('Target' if new is True else 'Source', project))
         print("")
     except Exception as e:
@@ -1112,7 +1122,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
 
 
 def migrate_components():
-    global jira_new, jira_old, max_retries, default_max_retries
+    global jira_new, jira_old, max_retries, default_max_retries, project_old, project_new
     
     print("[START] Components migration has been started.")
     old_components = jira_old.project_components(project_old)
@@ -2208,6 +2218,28 @@ def save_config(message=True):
     print("")
 
 
+def get_statuses(jira_url, new=False):
+    global headers, verify, JIRA_status_api, auth, old_statuses, new_statuses
+    
+    statuses = {}
+    try:
+        url_statuses = jira_url + JIRA_status_api
+        r = requests.get(url_statuses, auth=auth, headers=headers, verify=verify)
+        statuses_string = r.content.decode('utf-8')
+        statuses_details = json.loads(statuses_string)
+        for status in statuses_details:
+            if status["name"].upper() not in statuses.keys():
+                statuses[status["name"].upper()] = {}
+            statuses[status["name"].upper()]["key"] = status["statusCategory"]["key"]
+            statuses[status["name"].upper()]["id"] = status["id"]
+    except Exception as e:
+        print("[ERROR] Statuses Categories can't be processed due to: '{}'.".format(e))
+    
+    if new is False:
+        old_statuses = statuses
+    else:
+        new_statuses = statuses
+
 
 def get_priority(new_issue_type, old_issue):
     global field_value_mappings, issue_details_new
@@ -2227,11 +2259,13 @@ def get_priority(new_issue_type, old_issue):
         pass
     return new_priority
 
+
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, max_json_file_size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
+    global replace_complete_statuses_flag
     
     def check_status(new_status, new_issue_type):
         global new_transitions
@@ -2244,6 +2278,19 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         print("[ERROR] Provided status '{}' in mapping file not found for '{}' Issue Type. Default status '{}' would be used instead.".format(new_status, new_issue_type, default_status))
         return default_status
     
+    def get_new_complete_status(old_status_id, old_status_name, old_issuetype):
+        global old_statuses, new_statuses, status_mappings
+        
+        try:
+            if old_statuses[old_status_name.upper()]["key"] == 'done':
+                for new_status, old_status_lst in status_mappings[old_issuetype].items():
+                    if old_status_name in old_status_lst:
+                        return (new_statuses[new_status.upper()]["id"], new_status)
+            else:
+                return (old_status_id, old_status_name)
+        except:
+            return (old_status_id, old_status_name)
+            
     def get_watchers(jira, key):
         watchers = []
         try:
@@ -2315,6 +2362,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                 new_issue_type = issuetype
                 break
     
+    # Checking the already existed data
     if new is False:
         for log in new_issue.raw['changelog']['histories']:
             created = datetime.datetime.strptime(log['created'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
@@ -2332,6 +2380,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         except:
             pass
     
+    # Processing Issue History here
     for log in old_issue.raw['changelog']['histories']:
         history = {}
         user = {}
@@ -2358,11 +2407,19 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                 new_item["field"] = item['field']
                 new_item["from"] = item['from']
                 new_item["fromString"] = item['fromString']
-                new_item["to"] = item['to']
-                new_item["toString"] = item['toString']
+                if replace_complete_statuses_flag == 1 and item['field'] == 'status':
+                    try:
+                        (new_item["to"], new_item["toString"]) = get_new_complete_status(item['to'], item['toString'], old_issue.fields.issuetype.name)
+                    except:
+                        new_item["to"] = item['to']
+                        new_item["toString"] = item['toString']
+                else:
+                    new_item["to"] = item['to']
+                    new_item["toString"] = item['toString']
                 history["items"].append(new_item)
             histories.append(history)
     
+    # Processing Issue Worklogs here
     for log in old_issue.raw['fields']['worklog']['worklogs']:
         worklog = {}
         user = {}
@@ -2387,6 +2444,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                 pass
             worklogs.append(worklog)
     
+    # Processing Comments here
     for log in old_issue.raw['fields']['comment']['comments']:
         comment = {}
         created = datetime.datetime.strptime(log['created'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
@@ -2532,6 +2590,36 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             return (0, e)
 
 
+def get_correct_components(components):
+    global project_new, jira_new
+
+    new_components = jira_new.project_components(project_new)
+    new_components_lst = []
+    for new_component in new_components:
+        new_components_lst.append(new_component.name)
+
+    new_components_detail = []
+    for component in components:
+        if component['name'] in new_components_lst:
+            new_components.append({"name": component['name']})
+    return new_components_detail
+
+
+def get_correct_versions(versions):
+    global project_new, jira_new
+
+    new_versions = jira_new.project_versions(project_new)
+    new_versions_lst = []
+    for new_version in new_versions:
+        new_versions_lst.append(new_version.name)
+
+    new_versions_detail = []
+    for version in versions:
+        if version['name'] in new_versions_lst:
+            new_versions_detail.append({"name": version['name']})
+    return new_versions_detail
+
+
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
@@ -2666,8 +2754,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value_child = None
                     mapped_value = value_value
                 if mapped_value is not None and value_child is not None:
-                    mapped_value_value = value.split(' --> ')[0]
-                    mapped_value_child = value.split(' --> ')[1]
+                    try:
+                        mapped_value_value = value.split(' --> ')[0]
+                        mapped_value_child = value.split(' --> ')[1]
+                    except:
+                        mapped_value_value = value_value
+                        mapped_value_child = value_child
                 else:
                     mapped_value_value = value_value
                     mapped_value_child = value_child
@@ -2798,7 +2890,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         else:
                             concatenated_value = data_val['labels']
                     if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
-                        concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                        label_add_value = get_value(o_field)
+                        if label_add_value is not None and type(label_add_value) == list:
+                            concatenated_value.extend([i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in label_add_value])
+                        else:
+                            concatenated_value.append('' if label_add_value is None else str(label_add_value).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
                     elif issue_details_new[new_issuetype][new_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
                         value = str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_')
                         if value not in get_lm_field_values(new_field, new_issuetype):
@@ -3082,17 +3178,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         temp_versions = []
         for version in data_val['versions']:
             temp_versions.append({'name': version['name'].strip()})
-        data_val['versions'] = temp_versions
+        data_val['versions'] = get_correct_versions(temp_versions)
     if 'fixVersions' in data_val.keys() and data_val['fixVersions'] != [] and data_val['fixVersions'] is not None:
         temp_versions = []
         for version in data_val['fixVersions']:
             temp_versions.append({'name': version['name'].strip()})
-        data_val['fixVersions'] = temp_versions
+        data_val['fixVersions'] = get_correct_versions(temp_versions)
     if 'components' in data_val.keys() and data_val['components'] != []:
         temp_components = []
         for component in data_val['components']:
             temp_components.append({'name': component['name'].strip()})
-        data_val['components'] = temp_components
+        data_val['components'] = get_correct_components(temp_components)
     
     # Post-processing fix for Parent Links (which is not part of migration)
     try:
@@ -3186,6 +3282,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     new_issue.update(notify=False, fields=data_val)
                 except:
                     data_val.pop(issue_details_new[issuetype]['Epic Link']['id'], None)
+                    new_issue.update(notify=False, fields=data_val)
+            elif "Component name" in e.text and "is not valid" in e.text:
+                try:
+                    missing_component = e.text.replace("Component name '", "").replace("' is not valid", "")
+                    new_components = []
+                    for component in data_val["components"]:
+                        if component['name'] not in missing_component:
+                            new_components.append({"name": component['name']})
+                    data_val["components"] = new_components
+                    new_issue.update(notify=False, fields=data_val)
+                except:
+                    data_val.pop('components', None)
                     new_issue.update(notify=False, fields=data_val)
             else:
                 print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
@@ -3829,7 +3937,7 @@ def main_program():
     jql_non_completed_new = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE') ".format(project_new)
     non_completed_new = jira_new.search_issues(jql_non_completed_new, startAt=0, maxResults=1, json_result=True)['total']
     
-    if int(total_old) == int(total_new) or int(non_completed_new) == 0:
+    if int(total_old) == int(total_new) or (int(non_completed_new) == 0 and len(failed_issues) == 0):
         if migrate_sprints_check == 1 and json_importer_flag == 0:
             migrate_sprints(proj_old=project_old, param='CLOSED')
             migrate_sprints(proj_old=project_old, param='ACTIVE')
@@ -3839,7 +3947,7 @@ def main_program():
             print("[INFO] Issues in Target Project: '{}'".format(total_new))
             print("")
     else:
-        remaining = int(non_completed_new)
+        remaining = int(non_completed_new) + len(failed_issues)
         if json_importer_flag == 0 and multiple_json_data_processing == 0:
             print("[WARNING] Not ALL issues have been migrated from '{}' project. Remaining Issues: '{}'. Sprints will not be CLOSED until ALL issues migrated.".format(project_old, remaining if remaining > 0 else 0))
             print("[INFO] Sprints have been updated in '{}' seconds.".format(time.time() - start_update_sprints))
@@ -4383,11 +4491,6 @@ def change_migrate_metadata(*args):
     migrate_metadata_check = process_metadata.get()
 
 
-def change_force_update(*args):
-    global force_update_flag
-    force_update_flag = force_update.get()
-
-
 def change_migrate_comments(*args):
     global migrate_comments_check
     migrate_comments_check = process_comments.get()
@@ -4484,17 +4587,37 @@ def change_merge_project_start(*args):
 
 
 def change_migrate_history(*args):
-    global json_importer_flag, including_users_flag
+    global json_importer_flag, including_users_flag, replace_complete_statuses_flag, force_update_flag
     json_importer_flag = process_change_history.get()
     if json_importer_flag == 0:
         including_users_flag = 0
         process_users.set(including_users_flag)
+        replace_complete_statuses_flag = 0
+        process_change_history_statuses.set(replace_complete_statuses_flag)
+        force_update_flag = 0
+        force_update.set(force_update_flag)
+
+
+def change_migrate_history_statuses(*args):
+    global replace_complete_statuses_flag, json_importer_flag
+    replace_complete_statuses_flag = process_change_history_statuses.get()
+    if replace_complete_statuses_flag == 1:
+        json_importer_flag = 1
+        process_change_history.set(json_importer_flag)
 
 
 def change_users(*args):
     global including_users_flag, json_importer_flag
     including_users_flag = process_users.get()
     if including_users_flag == 1:
+        json_importer_flag = 1
+        process_change_history.set(json_importer_flag)
+
+
+def change_force_update(*args):
+    global force_update_flag, json_importer_flag
+    force_update_flag = force_update.get()
+    if force_update_flag == 1:
         json_importer_flag = 1
         process_change_history.set(json_importer_flag)
 
@@ -4642,61 +4765,65 @@ if __name__ == "__main__":
     force_update = IntVar(value=force_update_flag)
     Checkbutton(main, text="force update", font=("Helvetica", 9, "italic"), variable=force_update).grid(row=14, column=1, sticky=E, padx=40, columnspan=4, pady=0)
     force_update.trace('w', change_force_update)
+
+    process_change_history_statuses = IntVar(value=replace_complete_statuses_flag)
+    Checkbutton(main, text="Replace Completed statuses in Change history by Target ones (Agile Reporting support - Velocity, Sprint Reports)", font=("Helvetica", 9, "italic"), variable=process_change_history_statuses).grid(row=15, sticky=W, padx=110, column=0, columnspan=5, pady=0)
+    process_change_history_statuses.trace('w', change_migrate_history_statuses)
     
-    tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=7, column=3, pady=4, rowspan=3)
+    tk.Button(main, text='Change Configuration', font=("Helvetica", 9, "bold"), state='active', command=change_configs, width=20, heigh=2).grid(row=7, column=3, pady=4, rowspan=4)
     
-    tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=15, columnspan=4)
+    tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=16, columnspan=4)
     
-    tk.Label(main, text="Migration Process", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=16, column=0, columnspan=4, sticky=W, padx=80)
+    tk.Label(main, text="Migration Process", foreground="black", font=("Helvetica", 11, "italic", "underline"), pady=10).grid(row=17, column=0, columnspan=3, sticky=W, padx=80)
     
-    tk.Label(main, text="Step 3", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=16, column=0, columnspan=3, rowspan=1, sticky=W, padx=15)
+    tk.Label(main, text="Step 3", foreground="black", font=("Helvetica", 12, "bold", "underline"), pady=10).grid(row=17, column=0, columnspan=3, rowspan=1, sticky=W, padx=15)
     
-    tk.Label(main, text="For migration process please enter your Username / Password for JIRA(s) access", foreground="black", font=("Helvetica", 10), padx=10, wraplength=260).grid(row=17, column=0, rowspan=2, columnspan=3, sticky=W, padx=80)
-    tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=17, column=1, pady=5, columnspan=3, sticky=W, padx=20)
-    tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=18, column=1, pady=5, columnspan=3, sticky=W, padx=20)
+    tk.Label(main, text="For migration process please enter your Username / Password for JIRA(s) access", foreground="black", font=("Helvetica", 10), padx=10, wraplength=260).grid(row=18, column=0, rowspan=2, columnspan=3, sticky=W, padx=80)
+    tk.Label(main, text="Username", foreground="black", font=("Helvetica", 10)).grid(row=18, column=1, pady=5, columnspan=3, sticky=W, padx=20)
+    tk.Label(main, text="Password", foreground="black", font=("Helvetica", 10)).grid(row=19, column=1, pady=5, columnspan=3, sticky=W, padx=20)
     user = tk.Entry(main)
-    user.grid(row=17, column=1, pady=5, sticky=W, columnspan=3, padx=100)
+    user.grid(row=18, column=1, pady=5, sticky=W, columnspan=3, padx=100)
     passwd = tk.Entry(main, width=20, show="*")
-    passwd.grid(row=18, column=1, pady=5, sticky=W, columnspan=3, padx=100)
+    passwd.grid(row=19, column=1, pady=5, sticky=W, columnspan=3, padx=100)
     
-    tk.Button(main, text='Start JIRA Migration', font=("Helvetica", 9, "bold"), state='active', command=main_program, width=20, heigh=2).grid(row=17, column=3, pady=4, padx=10, rowspan=2)
+    tk.Button(main, text='Start JIRA Migration', font=("Helvetica", 9, "bold"), state='active', command=main_program, width=20, heigh=2).grid(row=18, column=3, pady=4, padx=10, rowspan=2)
     
-    tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=19, columnspan=4)
+    tk.Label(main, text="_____________________________________________________________________________________________________________________________").grid(row=20, columnspan=4)
     
-    tk.Label(main, text="Additional Configuration", foreground="black", font=("Helvetica", 10, "italic", "underline"), pady=10).grid(row=20, column=0, columnspan=4, sticky=W, padx=300)
+    tk.Label(main, text="Additional Configuration", foreground="black", font=("Helvetica", 10, "italic", "underline"), pady=10).grid(row=21, column=0, columnspan=4, sticky=W, padx=300)
     
     process_logging = IntVar(value=verbose_logging)
-    Checkbutton(main, text="Switch Verbose Logging ON for migration process.", font=("Helvetica", 9, "italic"), variable=process_logging).grid(row=21, column=0, sticky=W, padx=20, columnspan=3, pady=0)
+    Checkbutton(main, text="Switch Verbose Logging ON for migration process.", font=("Helvetica", 9, "italic"), variable=process_logging).grid(row=22, column=0, sticky=W, padx=20, columnspan=3, pady=0)
     process_logging.trace('w', change_logging)
     
     process_dummy_del = IntVar(value=delete_dummy_flag)
-    Checkbutton(main, text="Skip deletion of dummy issues (for testing purposes).", font=("Helvetica", 9, "italic"), variable=process_dummy_del).grid(row=22, column=0, sticky=W, padx=20, columnspan=3, pady=0)
+    Checkbutton(main, text="Skip deletion of dummy issues (for testing purposes).", font=("Helvetica", 9, "italic"), variable=process_dummy_del).grid(row=23, column=0, sticky=W, padx=20, columnspan=3, pady=0)
     process_dummy_del.trace('w', change_dummy)
     
     process_old_linkage = IntVar(value=create_remote_link_for_old_issue)
-    Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 9, "italic"), variable=process_old_linkage).grid(row=21, column=1, sticky=W, padx=70, columnspan=3, pady=0)
+    Checkbutton(main, text="Add Remote Links to Source Issues.", font=("Helvetica", 9, "italic"), variable=process_old_linkage).grid(row=22, column=1, sticky=W, padx=70, columnspan=3, pady=0)
     process_old_linkage.trace('w', change_linking)
     
     process_non_migrated = IntVar(value=skip_migrated_flag)
-    Checkbutton(main, text="Skip already migrated issues.", font=("Helvetica", 9, "italic"), variable=process_non_migrated).grid(row=22, column=1, sticky=W, padx=70, columnspan=3, pady=0)
+    Checkbutton(main, text="Skip already migrated issues.", font=("Helvetica", 9, "italic"), variable=process_non_migrated).grid(row=23, column=1, sticky=W, padx=70, columnspan=3, pady=0)
     process_non_migrated.trace('w', change_migrated)
     
     process_last_updated = IntVar(value=last_updated_days_check)
-    Checkbutton(main, text="ONLY migrate issues updated or created within the last number of days:", font=("Helvetica", 9, "italic"), variable=process_last_updated).grid(row=23, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="ONLY migrate issues updated or created within the last number of days:", font=("Helvetica", 9, "italic"), variable=process_last_updated).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     process_last_updated.trace('w', change_process_last_updated)
     
     recently_updated_days = check_similar("recently_updated_days", recently_updated_days)
     
     days = tk.Entry(main, width=5, textvariable=recently_updated_days)
     days.insert(END, recently_updated_days)
-    days.grid(row=23, column=1, pady=0, sticky=W, columnspan=3, padx=24)
+    days.grid(row=24, column=1, pady=0, sticky=W, columnspan=3, padx=24)
     
     process_dependencies = IntVar(value=including_dependencies_flag)
-    Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links).", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=23, column=1, sticky=W, padx=55, columnspan=3, pady=0)
+    Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links).", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=24, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
     
     process_only_last_updated_date = IntVar(value=process_only_last_updated_date_flag)
-    Checkbutton(main, text="Force Delta processing after date, i.e. 'last updated' >=  :", font=("Helvetica", 9, "italic"), variable=process_only_last_updated_date).grid(row=24, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Force Delta processing after date, i.e. 'last updated' >=  :", font=("Helvetica", 9, "italic"), variable=process_only_last_updated_date).grid(row=25, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     process_only_last_updated_date.trace('w', change_process_last_updated_date)
     
     if last_updated_date == '':
@@ -4707,48 +4834,48 @@ if __name__ == "__main__":
     last_updated_main = tk.Entry(main, width=15, textvariable=last_updated_date)
     last_updated_main.delete(0, END)
     last_updated_main.insert(END, last_updated_date)
-    last_updated_main.grid(row=24, column=0, columnspan=4, padx=340, stick=W)
+    last_updated_main.grid(row=25, column=0, columnspan=4, padx=340, stick=W)
     
     process_jsons = IntVar(value=multiple_json_data_processing)
-    Checkbutton(main, text="Create JSON files instead of API calls.", font=("Helvetica", 9, "italic"), variable=process_jsons).grid(row=24, column=1, sticky=W, padx=55, columnspan=3, pady=0)
+    Checkbutton(main, text="Create JSON files instead of API calls.", font=("Helvetica", 9, "italic"), variable=process_jsons).grid(row=25, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_jsons.trace('w', change_jsons)
     
     merge_projects_start = IntVar(value=merge_projects_start_flag)
-    Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=25, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     merge_projects_start.trace('w', change_merge_project_start)
     
-    tk.Label(main, text="OR", font=("Helvetica", 9, "italic")).grid(row=25, column=0, columnspan=4, sticky=W, padx=362)
+    tk.Label(main, text="OR", font=("Helvetica", 9, "italic")).grid(row=26, column=0, columnspan=4, sticky=W, padx=362)
     
     shifted_by = check_similar("shifted_by", shifted_by)
     
     start_num = tk.Entry(main, width=7, textvariable=shifted_by)
     start_num.insert(END, shifted_by)
-    start_num.grid(row=25, column=0, pady=0, sticky=W, columnspan=4, padx=312)
+    start_num.grid(row=26, column=0, pady=0, sticky=W, columnspan=4, padx=312)
     
     merge_projects = IntVar(value=merge_projects_flag)
-    Checkbutton(main, text="Shifting Starting Key from max in Target Project by:", font=("Helvetica", 9, "italic"), variable=merge_projects).grid(row=25, column=0, sticky=E, padx=150, columnspan=4, pady=0)
+    Checkbutton(main, text="Shifting Starting Key from max in Target Project by:", font=("Helvetica", 9, "italic"), variable=merge_projects).grid(row=26, column=0, sticky=E, padx=150, columnspan=4, pady=0)
     merge_projects.trace('w', change_merge_project)
     
     shifted_key_val = check_similar("shifted_key_val", shifted_key_val)
     
     shift_num = tk.Entry(main, width=10, textvariable=shifted_key_val)
     shift_num.insert(END, shifted_key_val)
-    shift_num.grid(row=25, column=2, pady=0, sticky=E, columnspan=3, padx=82)
+    shift_num.grid(row=26, column=2, pady=0, sticky=E, columnspan=3, padx=82)
     
     set_read_only = IntVar(value=set_source_project_read_only)
-    Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=27, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     set_read_only.trace('w', change_read_only)
     
     read_only_scheme_name = check_similar("read_only_scheme_name", read_only_scheme_name)
     
     permission_scheme = tk.Entry(main, width=30, textvariable=read_only_scheme_name)
     permission_scheme.insert(END, read_only_scheme_name)
-    permission_scheme.grid(row=26, column=2, pady=0, sticky=W, columnspan=3, padx=35)
+    permission_scheme.grid(row=27, column=2, pady=0, sticky=W, columnspan=3, padx=35)
     
-    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=27, column=0, pady=8, columnspan=4, rowspan=2)
+    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=28, column=0, pady=8, columnspan=4, rowspan=2)
     
     # The license details could be found here: https://github.com/delsakov/JIRA_Tools/
     # Please do not change line below with copyright
-    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=28, column=1, sticky=SE, padx=20, columnspan=3)
+    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=29, column=1, sticky=SE, padx=20, columnspan=3)
     
     tk.mainloop()
