@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.8'
+current_version = '2.9'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -44,7 +44,7 @@ team_project_prefix = ''
 dummy_parent = ''
 read_only_scheme_name = 'ReadOnly'
 verify = True
-max_number_for_dummy_parent_search = 30000
+max_number_for_dummy_parent_search = 10000
 
 # JIRA API configs
 JIRA_sprint_api = '/rest/agile/1.0/sprint/'
@@ -1937,6 +1937,7 @@ def get_minfields_issuetype(issue_details, all=0):
 def get_dummy_parent():
     global project_old, skip_migrated_flag, jira_new, jira_old, issue_details_new, issuetypes_mappings, dummy_parent
     global project_new, auth, headers, verify, json_importer_flag, max_number_for_dummy_parent_search, dummy_process
+    global start_jira_key
     
     if dummy_parent != '':
         return
@@ -1954,21 +1955,29 @@ def get_dummy_parent():
         return
     
     if json_importer_flag == 1:
+        parent_key = None
         jql = "project = {}".format(project_old)
         total_old = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
-        parent_key = None
-        if int(total_old) < max_number_for_dummy_parent_search:
-            old_skip_migrated_flag = skip_migrated_flag
-            skip_migrated_flag = 0
-            issues_for_parent = get_issues_by_jql(jira_old, jql, max_result=0)
-            skip_migrated_flag = old_skip_migrated_flag
-            for i in range(1, len(issues_for_parent)):
-                temp_key = str(project_old + '-' + str(i))
-                if temp_key not in issues_for_parent:
-                    parent_key = temp_key
-                    break
         
-        if int(total_old) >= max_number_for_dummy_parent_search or parent_key is None:
+        if int(total_old) > max_number_for_dummy_parent_search:
+            try:
+                max_key = find_max_id(project_old + '-' + str(max_number_for_dummy_parent_search), jira_old, project_old)
+                jql = "project = {} AND key >= {} AND key <= {}".format(project_old, start_jira_key, max_key)
+                total_old = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
+            except:
+                pass
+
+        old_skip_migrated_flag = skip_migrated_flag
+        skip_migrated_flag = 0
+        issues_for_parent = get_issues_by_jql(jira_old, jql, max_result=0)
+        skip_migrated_flag = old_skip_migrated_flag
+        for i in range(1, len(issues_for_parent)):
+            temp_key = str(project_old + '-' + str(i))
+            if temp_key not in issues_for_parent:
+                parent_key = temp_key
+                break
+        
+        if parent_key is None:
             jql_max = 'project = {} order by key DESC'.format(project_old)
             max_processing_key = jira_new.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
             parent_key = str(project_old + '-' + str(int(max_processing_key.split('-')[1]) + 1000))
@@ -3990,7 +3999,7 @@ def main_program():
             create_dummy_issues(issues_for_creation, batch_size=100)
         print("[INFO] Dummy Issues created in '{}' seconds.".format(time.time() - start_dummy_time))
         print("")
-
+    
     # Creating dummy parent
     if len(sub_tasks) > 0:
         for k in sub_tasks.keys():
@@ -4000,7 +4009,7 @@ def main_program():
                     break
             if dummy_parent != '':
                 break
-
+    
     # -----Metadata Migration-------
     # Main Migration block
     start_processing_time = time.time()
@@ -4344,12 +4353,12 @@ def change_configs():
     if processing_jira_jql == '':
         processing_jira_jql = "key in ()"
     processing_jira_jql = check_similar("processing_jira_jql", processing_jira_jql)
-
+    
     tk.Label(config_popup, text="OR (instead of above) JQL for migrate issues:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=300).grid(row=5, column=0, columnspan=2)
     jql = tk.Entry(config_popup, width=62, textvariable=processing_jira_jql)
     jql.insert(END, processing_jira_jql)
     jql.grid(row=5, column=2, columnspan=3, padx=8)
-
+    
     default_board_name = check_similar("default_board_name", default_board_name)
     
     tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=6, column=0, columnspan=2)
