@@ -143,6 +143,7 @@ total_data["users"] = []
 issues_lst = set()
 already_migrated_set = set()
 last_updated_date = 'YYYY-MM-DD'
+processing_jira_jql = ''
 updated_issues_num = 0
 threads = 1
 migrated_text = 'Migrated to'
@@ -3642,6 +3643,7 @@ def main_program():
     global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes, migrate_teams_check
     global set_source_project_read_only, shifted_by, merge_projects_flag, read_only_scheme_name, shifted_key_val
     global merge_projects_start_flag, process_only_last_updated_date_flag, dummy_parent, dummy_process
+    global processing_jira_jql
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
@@ -3794,10 +3796,6 @@ def main_program():
     
     get_hierarchy_config()
     
-    # Creating dummy parent
-    if len(sub_tasks) > 0:
-        get_dummy_parent()
-    
     # Calculating the highest level of available Key in OLD project
     if process_only_last_updated_date_flag == 1:
         start_jira_key = 1
@@ -3937,7 +3935,11 @@ def main_program():
         print("[INFO] Only last updated issues will be processed. Other options will be skipped.")
         print("")
     else:
-        if limit_migration_data != 0:
+        if processing_jira_jql != '':
+            processing_jira_jql = str("project = {} AND (".format(project_old)) + str(processing_jira_jql) + ")"
+            print("[INFO] The issues would be processed based on JQL: '{}'".format(processing_jira_jql))
+            jql_details = processing_jira_jql
+        elif limit_migration_data != 0:
             jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
             if start_jira_key == max_id:
                 jql_details = jql_details.replace('<', '<=')
@@ -3988,7 +3990,17 @@ def main_program():
             create_dummy_issues(issues_for_creation, batch_size=100)
         print("[INFO] Dummy Issues created in '{}' seconds.".format(time.time() - start_dummy_time))
         print("")
-    
+
+    # Creating dummy parent
+    if len(sub_tasks) > 0:
+        for k in sub_tasks.keys():
+            for task in issuetypes_mappings[k]['issuetypes']:
+                if task in items_lst.keys():
+                    get_dummy_parent()
+                    break
+            if dummy_parent != '':
+                break
+
     # -----Metadata Migration-------
     # Main Migration block
     start_processing_time = time.time()
@@ -4171,12 +4183,13 @@ def get_shifted_key(key, reversed=False):
 
 def change_configs():
     """Function which shows Pop-Up window with question about JIRA credentials, if not entered"""
-    global start_jira_key, limit_migration_data, template_project, new_project_name
-    global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads, pool_size
+    global start_jira_key, limit_migration_data, template_project, new_project_name, processing_jira_jql
+    global default_board_name, old_board_id, team_project_prefix, last_updated_date, threads, pool_size, project_old
     
     def config_save():
-        global start_jira_key, limit_migration_data, pool_size, template_project, new_project_name
+        global start_jira_key, limit_migration_data, pool_size, template_project, new_project_name, processing_jira_jql
         global default_board_name, old_board_id, team_project_prefix, validation_error, last_updated_date, threads
+        global project_old
         
         validation_error = 0
         
@@ -4190,6 +4203,7 @@ def change_configs():
         last_updated_date = last_updated.get().strip()
         template_project = template_proj.get()
         new_project_name = name_proj.get()
+        processing_jira_jql = jql.get().strip()
         
         if last_updated_date == 'YYYY-MM-DD':
             last_updated_date = ''
@@ -4265,6 +4279,9 @@ def change_configs():
         except:
             new_project_name = ''
         
+        if processing_jira_jql == "key in ()":
+            processing_jira_jql = ''
+        
         if validation_error == 1:
             print("[WARNING] Mandatory Config data is invalid or empty. Please check the Config data again.")
         
@@ -4281,7 +4298,7 @@ def change_configs():
     def check_similar(field, value):
         """ This function required for fixing same valu duplication issue for second Tk window """
         global start_jira_key, limit_migration_data, pool_size, default_board_name, old_board_id, new_project_name
-        global team_project_prefix, validation_error, last_updated_date, threads, template_project
+        global team_project_prefix, validation_error, last_updated_date, threads, template_project, processing_jira_jql
         
         fields = {"start_jira_key": start_jira_key,
                   "limit_migration_data": limit_migration_data,
@@ -4294,6 +4311,7 @@ def change_configs():
                   "pool_size": pool_size,
                   "template_project": template_project,
                   "new_project_name": new_project_name,
+                  "processing_jira_jql": processing_jira_jql,
                   }
         for f, v in fields.items():
             if str(value) == str(v) and field != f:
@@ -4323,53 +4341,62 @@ def change_configs():
     migrated_number.insert(0, limit_migration_data)
     migrated_number.grid(row=4, column=4, columnspan=1, padx=8)
     
+    if processing_jira_jql == '':
+        processing_jira_jql = "key in ()"
+    processing_jira_jql = check_similar("processing_jira_jql", processing_jira_jql)
+
+    tk.Label(config_popup, text="OR (instead of above) JQL for migrate issues:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=300).grid(row=5, column=0, columnspan=2)
+    jql = tk.Entry(config_popup, width=62, textvariable=processing_jira_jql)
+    jql.insert(END, processing_jira_jql)
+    jql.grid(row=5, column=2, columnspan=3, padx=8)
+
     default_board_name = check_similar("default_board_name", default_board_name)
     
-    tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=5, column=0, columnspan=2)
+    tk.Label(config_popup, text="New Board name for migrated Sprints:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=6, column=0, columnspan=2)
     new_board = tk.Entry(config_popup, width=20, textvariable=default_board_name)
     new_board.insert(END, default_board_name)
-    new_board.grid(row=5, column=2, columnspan=1, padx=8)
+    new_board.grid(row=6, column=2, columnspan=1, padx=8)
     
     if old_board_id == 0:
         old_board_id = ''
     old_board_id = check_similar("old_board_id", old_board_id)
     
-    tk.Label(config_popup, text="Sprints from Board ID only:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=5, column=3)
+    tk.Label(config_popup, text="Sprints from Board ID only:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
     old_board = tk.Entry(config_popup, width=10, textvariable=old_board_id)
     old_board.delete(0, END)
     old_board.insert(0, old_board_id)
-    old_board.grid(row=5, column=4, columnspan=1, padx=8)
+    old_board.grid(row=6, column=4, columnspan=1, padx=8)
     
-    tk.Label(config_popup, text="Prefix for Team names, if migrated:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=6, column=0, columnspan=2)
+    tk.Label(config_popup, text="Prefix for Team names, if migrated:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=250).grid(row=7, column=0, columnspan=2)
     new_teams = tk.Entry(config_popup, width=20, textvariable=team_project_prefix)
     new_teams.insert(END, team_project_prefix)
-    new_teams.grid(row=6, column=2, columnspan=1, padx=8)
+    new_teams.grid(row=7, column=2, columnspan=1, padx=8)
     
     threads = check_similar("threads", threads)
     
-    tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=6, column=3)
+    tk.Label(config_popup, text="Parallel Threads:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=7, column=3)
     threads_num = tk.Entry(config_popup, width=10, textvariable=threads)
     threads_num.delete(0, END)
     threads_num.insert(0, threads)
-    threads_num.grid(row=6, column=4, columnspan=1, padx=8)
+    threads_num.grid(row=7, column=4, columnspan=1, padx=8)
     
     pool_size = check_similar("pool_size", pool_size)
     
-    tk.Label(config_popup, text="Number Processes:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=7, column=3)
+    tk.Label(config_popup, text="Number Processes:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=200).grid(row=8, column=3)
     process_num = tk.Entry(config_popup, width=10, textvariable=pool_size)
     process_num.delete(0, END)
     process_num.insert(0, pool_size)
-    process_num.grid(row=7, column=4, columnspan=1, padx=8)
+    process_num.grid(row=8, column=4, columnspan=1, padx=8)
     
     if last_updated_date == '':
         last_updated_date = 'YYYY-MM-DD'
     
     last_updated_date = check_similar("last_updated_date", last_updated_date)
     
-    tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=8, column=0, columnspan=4)
+    tk.Label(config_popup, text="Force update issues changed after that date, i.e. 'last updated >=  :", foreground="black", font=("Helvetica", 10), pady=7, padx=8, wraplength=500).grid(row=9, column=0, columnspan=4)
     last_updated = tk.Entry(config_popup, width=15, textvariable=last_updated_date)
     last_updated.insert(END, last_updated_date)
-    last_updated.grid(row=8, column=3, columnspan=2, padx=70, stick=W)
+    last_updated.grid(row=9, column=3, columnspan=2, padx=70, stick=W)
     
     tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=9, columnspan=5)
     
