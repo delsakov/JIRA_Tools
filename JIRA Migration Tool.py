@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '2.7'
+current_version = '2.8'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -41,7 +41,10 @@ project_new = ''
 template_project = ''
 new_project_name = ''
 team_project_prefix = ''
+dummy_parent = ''
 read_only_scheme_name = 'ReadOnly'
+verify = True
+max_number_for_dummy_parent_search = 30000
 
 # JIRA API configs
 JIRA_sprint_api = '/rest/agile/1.0/sprint/'
@@ -69,7 +72,6 @@ new_sprints = {}
 old_board_id = 0
 new_board_id = 0
 default_board_name = 'Shared Sprints'
-verify = True
 
 # Excel configs
 header_font = Font(color='00000000', bold=True)
@@ -126,6 +128,7 @@ jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Paren
 additional_mapping_fields = ['Description', 'Labels', 'Due Date', 'Target start', 'Target end']
 limit_migration_data = 0  # 0 if all
 start_jira_key = 1
+dummy_process = 1
 create_remote_link_for_old_issue = 0
 username, password = ('', '')
 auth = (username, password)
@@ -1455,8 +1458,9 @@ def process_issue(key):
     '''Main migration Function - issue migration processing here.'''
     global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
-    global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old
+    global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old, dummy_parent
     global multiple_json_data_processing, verbose_logging, force_update_flag, max_retries, default_max_retries
+    global including_dependencies_flag, dummy_process
     
     try:
         new_issue_type = ''
@@ -1486,17 +1490,25 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        parent = get_parent_for_subtask(old_issue, issue_type)
-                        if parent is None:
-                            print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
-                            delete_issue(new_issue_key)
-                            return (0, key)
+                        parent = get_parent_for_subtask(old_issue, issue_type).replace(project_old, project_new)
+                        if parent is None and dummy_parent != '':
+                            parent = dummy_parent
+                            dummy_process = 1
                     try:
                         parent_issue = jira_new.issue(parent)
                     except:
-                        print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
-                        delete_issue(new_issue_key)
-                        return (0, key)
+                        try:
+                            if including_dependencies_flag == 1:
+                                parent_issue_old = jira_old.issue(parent.replace(project_new, project_old))
+                                for k, v in issuetypes_mappings.items():
+                                    if parent_issue_old.fields.issuetype.name in v:
+                                        process_issue(parent.replace(project_new, project_old))
+                                        break
+                            parent_issue = jira_new.issue(parent)
+                        except:
+                            print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
+                            delete_issue(new_issue_key)
+                            return (0, key)
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                 elif new_issue_type in sub_tasks.keys():
@@ -1529,16 +1541,25 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        parent = get_parent_for_subtask(old_issue, issue_type)
-                        if parent is None:
-                            print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
-                            delete_issue(new_issue_key)
-                            return (0, key)
+                        parent = get_parent_for_subtask(old_issue, issue_type).replace(project_old, project_new)
+                        if parent is None and dummy_parent != '':
+                            parent = dummy_parent
+                            dummy_process = 1
                     try:
                         parent_issue = jira_new.issue(parent)
                     except:
-                        print("[ERROR] Parent for '{}' has not been found. Sub-Task '{}' would not be created. Skipped.".format(new_issue_type, new_issue_key))
-                        return (0, key)
+                        try:
+                            if including_dependencies_flag == 1:
+                                parent_issue_old = jira_old.issue(parent.replace(project_new, project_old))
+                                for k, v in issuetypes_mappings.items():
+                                    if parent_issue_old.fields.issuetype.name in v:
+                                        process_issue(parent.replace(project_new, project_old))
+                                        break
+                            parent_issue = jira_new.issue(parent)
+                        except:
+                            print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
+                            delete_issue(new_issue_key)
+                            return (0, key)
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                 elif get_shifted_key(old_issue.key.replace(project_old, project_new)) not in already_processed_json_importer_issues:
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
@@ -1912,6 +1933,78 @@ def get_minfields_issuetype(issue_details, all=0):
         return i_types
 
 
+def get_dummy_parent():
+    global project_old, skip_migrated_flag, jira_new, jira_old, issue_details_new, issuetypes_mappings, dummy_parent
+    global project_new, auth, headers, verify, json_importer_flag, max_number_for_dummy_parent_search, dummy_process
+    
+    if dummy_parent != '':
+        return
+    
+    print("[START] Searching / creating Dummy Parent for orphan Sub-Tasks.")
+    jql_new = "project = {} AND summary ~ DUMMY_PARENT".format(project_new)
+    # jql_new = "summary ~ DUMMY_PARENT"  # if one Dummy parent to be created - that line could be used instead
+    parent = get_issues_by_jql(jira_new, jql_new, max_result=1)
+    
+    if parent is not None and parent != []:
+        dummy_parent = parent[0]
+        dummy_process = 1
+        print("[END] Dummy Parent was found. Dummy Parent Key is '{}'".format(dummy_parent))
+        print("")
+        return
+    
+    if json_importer_flag == 1:
+        jql = "project = {}".format(project_old)
+        total_old = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
+        parent_key = None
+        if int(total_old) < max_number_for_dummy_parent_search:
+            old_skip_migrated_flag = skip_migrated_flag
+            skip_migrated_flag = 0
+            issues_for_parent = get_issues_by_jql(jira_old, jql, max_result=0)
+            skip_migrated_flag = old_skip_migrated_flag
+            for i in range(1, len(issues_for_parent)):
+                temp_key = str(project_old + '-' + str(i))
+                if temp_key not in issues_for_parent:
+                    parent_key = temp_key
+                    break
+        
+        if int(total_old) >= max_number_for_dummy_parent_search or parent_key is None:
+            jql_max = 'project = {} order by key DESC'.format(project_old)
+            max_processing_key = jira_new.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
+            parent_key = str(project_old + '-' + str(int(max_processing_key.split('-')[1]) + 1000))
+        
+        for k, v in issuetypes_mappings.items():
+            if v['hierarchy'] in ['2', '3']:
+                issuetype = k
+                break
+        
+        parent_key = get_shifted_key(parent_key.replace(project_old, project_new))
+        url = JIRA_BASE_URL_NEW + JIRA_imported_api
+        data = {}
+        data["projects"] = []
+        project_issue = {}
+        project_details = {}
+        project_details["key"] = project_new
+        project_issue["key"] = parent_key
+        project_issue["issueType"] = issuetype
+        project_issue["summary"] = "DUMMY_PARENT"
+        project_issue["description"] = "DUMMY_PARENT (for migrated orphan Sub-Tasks)"
+        project_details["issues"] = [project_issue]
+        data["projects"].append(project_details)
+        try:
+            params = {"notifyUsers": "false"}
+            r = requests.post(url, json=data, auth=auth, headers=headers, verify=verify, params=params)
+            if str(r.status_code) == '202':
+                dummy_parent = parent_key
+                dummy_process = 0
+        except Exception as e:
+            print("[ERROR] JSON Importer error: '{}'".format(e))
+            dummy_parent = None
+        
+        print("[END] Dummy Parent was created. Dummy Parent Key is '{}'".format(dummy_parent))
+        print("")
+        return
+
+
 def delete_issue(key):
     global username, password
     
@@ -2242,10 +2335,15 @@ def get_statuses(jira_url, new=False):
 
 
 def get_priority(new_issue_type, old_issue):
-    global field_value_mappings, issue_details_new
+    global field_value_mappings, issue_details_new, issuetypes_mappings
     
-    new_priority = issue_details_new[new_issue_type]['Priority']['default value']
-    old_priority = ''
+    if new_issue_type is None:
+        for k, v in issuetypes_mappings.items():
+            if v['hierarchy'] in ['2', '3']:
+                new_issue_type = k
+                break
+    else:
+        new_priority = issue_details_new[new_issue_type]['Priority']['default value']
     
     try:
         old_priority = old_issue.fields.priority.name
@@ -2290,7 +2388,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                 return (old_status_id, old_status_name)
         except:
             return (old_status_id, old_status_name)
-            
+    
     def get_watchers(jira, key):
         watchers = []
         try:
@@ -2339,7 +2437,6 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     existed_comments = []
     url = JIRA_BASE_URL_NEW + JIRA_imported_api
     data = {}
-    processing_data = {}
     data["projects"] = []
     project_issue = {}
     project_details = {}
@@ -2592,12 +2689,12 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
 
 def get_correct_components(components):
     global project_new, jira_new
-
+    
     new_components = jira_new.project_components(project_new)
     new_components_lst = []
     for new_component in new_components:
         new_components_lst.append(new_component.name)
-
+    
     new_components_detail = []
     for component in components:
         if component['name'] in new_components_lst:
@@ -2607,12 +2704,12 @@ def get_correct_components(components):
 
 def get_correct_versions(versions):
     global project_new, jira_new
-
+    
     new_versions = jira_new.project_versions(project_new)
     new_versions_lst = []
     for new_version in new_versions:
         new_versions_lst.append(new_version.name)
-
+    
     new_versions_detail = []
     for version in versions:
         if version['name'] in new_versions_lst:
@@ -2623,7 +2720,7 @@ def get_correct_versions(versions):
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
-    global jira_new, items_lst, json_importer_flag, migrate_teams_check
+    global jira_new, items_lst, json_importer_flag, migrate_teams_check, including_dependencies_flag
     
     old_issuetype = old_issue.fields.issuetype.name
     
@@ -2925,7 +3022,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             value = get_value(old_field[0])
         return value
     
-    def update_issuetype(issuetype, old_issuetype, old_issue=old_issue):
+    def update_issuetype(issuetype, old_issuetype, new_issue=new_issue):
         global issue_details_new, verbose_logging
         data = {}
         mandatory_fields = get_minfields_issuetype(issue_details_new, all=1)
@@ -3211,6 +3308,35 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 pass
             if parent_found == 0:
                 data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+    except:
+        pass
+    
+    # Post-processing fix for Epic Links (which is not part of migration)
+    try:
+        if issue_details_new[issuetype]['Epic Link']['id'] in data_val.keys():
+            epic_found = 0
+            for k, v in items_lst.items():
+                if data_val[issue_details_new[issuetype]['Epic Link']['id']] in v:
+                    epic_found = 1
+                    break
+            try:
+                epic_issue = jira_old.issue(data_val[issue_details_new[issuetype]['Epic Link']['id']].replace(project_new, project_old))
+                try:
+                    epic_new_issue = jira_new.issue(data_val[issue_details_new[issuetype]['Epic Link']['id']])
+                    epic_found = 1
+                except:
+                    if including_dependencies_flag == 1:
+                        for k, v in issuetypes_mappings.items():
+                            if epic_issue.fields.issuetype.name in v:
+                                process_issue(data_val[issue_details_new[issuetype]['Epic Link']['id']].replace(project_new, project_old))
+                                break
+                        epic_found = 1
+                    else:
+                        epic_found = 0
+            except:
+                epic_found = 0
+            if epic_found == 0:
+                data_val.pop(issue_details_new[issuetype]['Epic Link']['id'], None)
     except:
         pass
     
@@ -3515,7 +3641,7 @@ def main_program():
     global json_importer_flag, headers, JIRA_imported_api, new_board_id, failed_issues, multiple_json_data_processing
     global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes, migrate_teams_check
     global set_source_project_read_only, shifted_by, merge_projects_flag, read_only_scheme_name, shifted_key_val
-    global merge_projects_start_flag, process_only_last_updated_date_flag
+    global merge_projects_start_flag, process_only_last_updated_date_flag, dummy_parent, dummy_process
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
@@ -3668,6 +3794,10 @@ def main_program():
     
     get_hierarchy_config()
     
+    # Creating dummy parent
+    if len(sub_tasks) > 0:
+        get_dummy_parent()
+    
     # Calculating the highest level of available Key in OLD project
     if process_only_last_updated_date_flag == 1:
         start_jira_key = 1
@@ -3791,7 +3921,7 @@ def main_program():
     print("[START] Issues loading from Source project was started. It could take some time... Please wait...")
     
     if skip_migrated_flag == 1:
-        jql_non_migrated = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE')".format(project_new)
+        jql_non_migrated = "project = {} AND labels = MIGRATION_NOT_COMPLETE".format(project_new)
         get_issues_by_jql(jira_new, jql=jql_non_migrated, types=True, non_migrated=True)
     
     if migrate_sprints_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0:
@@ -3961,6 +4091,8 @@ def main_program():
         delete_extra_issues(max_id)
         print("[INFO] Dummy issues have been deleted/skipped in '{}' seconds.".format(time.time() - start_delete_time))
         print("")
+    if dummy_process == 0:
+        delete_issue(dummy_parent)
     
     # Update Source Project as Read-Only after migration
     if set_source_project_read_only == 1:
@@ -4765,7 +4897,7 @@ if __name__ == "__main__":
     force_update = IntVar(value=force_update_flag)
     Checkbutton(main, text="force update", font=("Helvetica", 9, "italic"), variable=force_update).grid(row=14, column=1, sticky=E, padx=40, columnspan=4, pady=0)
     force_update.trace('w', change_force_update)
-
+    
     process_change_history_statuses = IntVar(value=replace_complete_statuses_flag)
     Checkbutton(main, text="Replace Completed statuses in Change history by Target ones (Agile Reporting support - Velocity, Sprint Reports)", font=("Helvetica", 9, "italic"), variable=process_change_history_statuses).grid(row=15, sticky=W, padx=110, column=0, columnspan=5, pady=0)
     process_change_history_statuses.trace('w', change_migrate_history_statuses)
