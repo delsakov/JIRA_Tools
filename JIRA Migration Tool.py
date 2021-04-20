@@ -1966,7 +1966,7 @@ def get_dummy_parent():
                 total_old = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
             except:
                 pass
-
+        
         old_skip_migrated_flag = skip_migrated_flag
         skip_migrated_flag = 0
         issues_for_parent = get_issues_by_jql(jira_old, jql, max_result=0)
@@ -3570,6 +3570,72 @@ def check_global_admin_rights():
         print("")
 
 
+def validate_template():
+    global issue_details_new, issuetypes_mappings, fields_mappings, status_mappings, new_transitions
+    
+    template_error = 0
+    # Checking issuetype mappings
+    for issuetype, old_issuetypes in issuetypes_mappings.items():
+        if issuetype != '':
+            type_not_found = 1
+            for type in issue_details_new.keys():
+                if type == issuetype:
+                    type_not_found = 0
+                    break
+            if type_not_found == 1:
+                print("[ERROR] Issuetype '{}' has not available in Target project. Mapped to '{}'".format(issuetype, old_issuetypes['issuetypes']))
+                template_error = 1
+
+    # Checking field mappings
+    for issuetype, values in issuetypes_mappings.items():
+        for old_issuetype in values['issuetypes']:
+            for new_field, old_fields in fields_mappings[old_issuetype].items():
+                if new_field != '':
+                    field_not_found = 1
+                    try:
+                        for field in issue_details_new[issuetype].keys():
+                            if new_field == field:
+                                field_not_found = 0
+                                break
+                    except:
+                        field_not_found = 1
+                    if field_not_found == 1:
+                        print("[ERROR] Field '{}' has not available for '{}' Issuetype in Target project. Mapped to '{}'".format(new_field, issuetype, old_fields))
+                        template_error = 1
+
+    # Checking statuses mappings
+    issuetype_statuses = {}
+    for k, v in new_transitions.items():
+        statuses_lst = []
+        for l in v:
+            statuses_lst.append(l[0])
+            statuses_lst.append(l[2])
+        issuetype_statuses[k] = list(set(statuses_lst))
+
+    for issuetype, values in issuetypes_mappings.items():
+        for old_issuetype in values['issuetypes']:
+            for n_status, old_statuses in status_mappings[old_issuetype].items():
+                if n_status != '':
+                    status_not_found = 1
+                    try:
+                        for new_status in issuetype_statuses[issuetype]:
+                            if new_status.upper() == n_status.upper():
+                                status_not_found = 0
+                                break
+                        if status_not_found == 1:
+                            print("[ERROR] Status '{}' has not available for '{}' Issuetype in Target project. Mapped to '{}'".format(n_status, issuetype, old_statuses))
+                            template_error = 1
+                    except:
+                        pass
+    
+    if template_error == 1:
+        print("")
+        print("[FATAL ERROR] Template filled incorectly. Please fix issues and try again.")
+        print("")
+        os.system("pause")
+        exit()
+
+
 def find_max_id(key, jira, project):
     jql_max = 'project = {} order by key DESC'.format(project)
     max_processing_key = jira.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
@@ -3802,6 +3868,12 @@ def main_program():
             get_transitions(project_old, JIRA_BASE_URL_OLD, new=False)
         except:
             print("[WARNING] No PROJECT ADMIN rigts available for Source '{}' project. Sub-Tasks can't be converted into Issues.".format(project_old))
+    
+    # Validate values in template
+    print("[START] Template validation started.")
+    validate_template()
+    print("[END] Template validation has been completed. No issues were found.")
+    print("")
     
     get_hierarchy_config()
     
