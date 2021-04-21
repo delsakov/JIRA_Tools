@@ -244,7 +244,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                     else:
                         val = str(val)
                     d.append(val)
-                if set(d) != set(empty_row):
+                if set(d) != set(empty_row) and d != []:
                     if excel_sheet_name == 'Project':
                         JIRA_BASE_URL_OLD = d[0].strip('/').strip()
                         JIRA_BASE_URL_NEW = d[2].strip('/').strip()
@@ -329,8 +329,10 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
             
             if excel_sheet_name not in ['Project', 'Issuetypes', 'Statuses', 'Fields']:
                 field_value_mappings[excel_sheet_name] = value_mappings
-    except:
-        print("[ERROR] '{}' file not found. Mappings can't be processed.".format(file_path))
+    except Exception as e:
+        print("[ERROR] '{}' file not found. Mappings can't be processed. Error: '{}'".format(file_path, e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         os.system("pause")
         exit()
     #  If issuetypes needs to be stripped.
@@ -1446,18 +1448,18 @@ def get_parent_for_subtask(issue, issue_type):
     
     parent = None
     try:
-        parent = eval('old_issue.fields.' + issue_details_old[issue_type]['Epic Link']['id'])
+        parent = eval('issue.fields.' + issue_details_old[issue_type]['Epic Link']['id'])
         return parent
     except:
         pass
     try:
-        parent = eval('old_issue.fields.' + issue_details_old[issue_type]['Parent Link']['id'])
+        parent = eval('issue.fields.' + issue_details_old[issue_type]['Parent Link']['id'])
         return parent
     except:
         return parent
 
 
-def process_issue(key):
+def process_issue(key, reprocess=False):
     '''Main migration Function - issue migration processing here.'''
     global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
@@ -1467,7 +1469,10 @@ def process_issue(key):
     
     try:
         new_issue_type = ''
-        new_issue_key = get_shifted_key(project_new + '-' + str(key.split('-')[1]))
+        if reprocess is False:
+            new_issue_key = get_shifted_key(project_new + '-' + str(key.split('-')[1]))
+        else:
+            new_issue_key = project_new + '-' + str(key.split('-')[1])
         try:
             old_issue = jira_old.issue(key, expand="changelog")
             if json_importer_flag == 1 or migrate_metadata_check == 1:
@@ -1493,7 +1498,8 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        parent = get_parent_for_subtask(old_issue, issue_type).replace(project_old, project_new)
+                        parent_calculated = get_parent_for_subtask(old_issue, issue_type)
+                        parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
                         if parent is None and dummy_parent != '':
                             parent = dummy_parent
                             dummy_process = 1
@@ -1505,7 +1511,7 @@ def process_issue(key):
                                 parent_issue_old = jira_old.issue(parent.replace(project_new, project_old))
                                 for k, v in issuetypes_mappings.items():
                                     if parent_issue_old.fields.issuetype.name in v:
-                                        process_issue(parent.replace(project_new, project_old))
+                                        process_issue(parent.replace(project_new, project_old), reprocess=True)
                                         break
                             parent_issue = jira_new.issue(parent)
                         except:
@@ -1515,11 +1521,15 @@ def process_issue(key):
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                 elif new_issue_type in sub_tasks.keys():
-                    try:
-                        parent_field = old_issue.fields.parent
-                    except:
+                    parent_calculated = get_parent_for_subtask(old_issue, issue_type)
+                    parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
+                    if parent is None and dummy_parent != '':
+                        parent = dummy_parent
+                        dummy_process = 1
+                    if parent != new_issue.fields.parent.key:
                         delete_issue(new_issue_key)
-                        parent_field = old_issue.fields.parent
+                        process_issue(new_issue_key.replace(project_new, project_old), reprocess=True)
+                        return (0, key)
                 if force_update_flag == 1:
                     if new_issue_type in sub_tasks.keys():
                         status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
@@ -1544,7 +1554,8 @@ def process_issue(key):
                         parent_field = None
                     parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
                     if parent is None:
-                        parent = get_parent_for_subtask(old_issue, issue_type).replace(project_old, project_new)
+                        parent_calculated = get_parent_for_subtask(old_issue, issue_type)
+                        parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
                         if parent is None and dummy_parent != '':
                             parent = dummy_parent
                             dummy_process = 1
@@ -1556,7 +1567,7 @@ def process_issue(key):
                                 parent_issue_old = jira_old.issue(parent.replace(project_new, project_old))
                                 for k, v in issuetypes_mappings.items():
                                     if parent_issue_old.fields.issuetype.name in v:
-                                        process_issue(parent.replace(project_new, project_old))
+                                        process_issue(parent.replace(project_new, project_old), reprocess=True)
                                         break
                             parent_issue = jira_new.issue(parent)
                         except:
@@ -2018,13 +2029,14 @@ def get_dummy_parent():
 
 
 def delete_issue(key):
-    global username, password
+    global JIRA_BASE_URL_NEW, auth, threads, verify
     
+    jira_auth = JIRA(JIRA_BASE_URL_NEW, auth=auth, async_workers=threads, max_retries=3, options={'verify': verify})
     try:
-        atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password)
-        atlassian_jira_new.delete_issue(key)
+        issue = jira_auth.issue(key)
+        issue.delete(deleteSubtasks=True)
         return (0, key)
-    except:
+    except Exception as e:
         return (1, key)
 
 
@@ -3075,7 +3087,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     data_val = {}
     diff_issuetypes = 0
     try:
-        parent = new_issue.fields.parent
+        parent = new_issue.fields.parent.key
     except:
         parent = None
     new_issuetype = new_issue.fields.issuetype.name
@@ -3098,7 +3110,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         else:
             new_key = new_issue.key
             delete_issue(new_key)
-            return process_issue(old_issue.key.replace(project_old, project_new))
+            return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
     data_val['summary'] = old_issue.fields.summary
     data_val['issuetype'] = {'name': issuetype}
     if diff_issuetypes == 1:
@@ -3223,7 +3235,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             try:
                 new_existent_team = new_existent_team.value.upper()
             except:
-                new_existent_team = new_existent_team.upper()
+                try:
+                    new_existent_team = new_existent_team.name.upper()
+                except:
+                    new_existent_team = new_existent_team.upper()
             if issue_details_new[issuetype]['Team']['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
                 new_existent_team = get_team_name(new_existent_team, jira_url=JIRA_BASE_URL_NEW).upper()
         except:
@@ -3246,19 +3261,21 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             try:
                 old_team = old_team.value.upper()
             except:
-                old_team = old_team.upper()
+                try:
+                    old_team = old_team.name.upper()
+                except:
+                    old_team = old_team.upper()
             if issue_details_old[old_issuetype][fields_mappings[old_issuetype]['Team'][0]]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
                 old_team = get_team_name(old_team).upper()
         except:
             old_team = None
-        if new_existent_team == new_team or new_existent_team == old_team or issuetype in sub_tasks.keys():
-            data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
-        elif new_team != new_existent_team and new_existent_team is None:
-            pass
-        elif json_importer_flag == 1 and new_team != old_team and old_team is not None:
+        if new_team != old_team and new_existent_team is None:
+            if verbose_logging == 1:
+                print("[INFO] Team would be updated to '{}'".format(new_team))
+        elif json_importer_flag == 1 and new_team != old_team and new_existent_team is not None:
             new_key = new_issue.key
             delete_issue(new_key)
-            return process_issue(old_issue.key.replace(project_old, project_new))
+            return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
         else:
             data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
     
@@ -3358,7 +3375,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     if including_dependencies_flag == 1:
                         for k, v in issuetypes_mappings.items():
                             if epic_issue.fields.issuetype.name in v:
-                                process_issue(data_val[issue_details_new[issuetype]['Epic Link']['id']].replace(project_new, project_old))
+                                process_issue(data_val[issue_details_new[issuetype]['Epic Link']['id']].replace(project_new, project_old), reprocess=True)
                                 break
                         epic_found = 1
                     else:
@@ -3623,7 +3640,7 @@ def validate_template():
                     type_not_found = 0
                     break
             if type_not_found == 1:
-                print("[ERROR] Issuetype '{}' has not available in Target project. Mapped to '{}'".format(issuetype, old_issuetypes['issuetypes']))
+                print("[ERROR] Issuetype '{}' is not available in Target project. Mapped to '{}'".format(issuetype, old_issuetypes['issuetypes']))
                 template_error = 1
                 error_processed = 1
     
@@ -3636,7 +3653,7 @@ def validate_template():
                     type_not_found = 0
                     break
             if type_not_found == 1:
-                print("[ERROR] Issuetype '{}' has not available in Source project. Mapped to '{}'".format(old_issuetype, issuetype))
+                print("[ERROR] Issuetype '{}' is not available in Source project. Mapped to '{}'".format(old_issuetype, issuetype))
                 proposed_value = try_to_validate(old_issuetype, list(issue_details_old.keys()))
                 if proposed_value is None:
                     print("[INFO] Available issuetypes are: '{}'".format(issue_details_old.keys()))
@@ -3644,7 +3661,7 @@ def validate_template():
                     print("[PROPOSED CHANGE] Issuetype '{}' could be renamed to '{}'".format(old_issuetype, proposed_value))
                 template_error = 1
                 error_processed = 1
-    
+
     if template_error == 1 and error_processed == 1:
         print("")
         error_processed = 0
@@ -3664,12 +3681,12 @@ def validate_template():
                         except:
                             field_not_found = 1
                         if field_not_found == 1:
-                            print("[ERROR] Field '{}' has not available for '{}' Issuetype in Source project. Mapped to '{}'".format(new_field, issuetype, old_fields))
+                            print("[ERROR] Target Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source fields: '{}'".format(new_field, old_issuetype, issuetype, old_fields))
                             template_error = 1
                             error_processed = 1
             except:
                 print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-    
+
     # Checking Source field mappings
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
@@ -3687,19 +3704,19 @@ def validate_template():
                                 field_not_found = 1
                             if field_not_found == 1:
                                 proposed_value = try_to_validate(old_field, list(issue_details_old[old_issuetype].keys()))
-                                print("[ERROR] Field '{}' has not available for '{}' Issuetype in Source project. Mapped to '{}'".format(old_field, old_issuetype, new_field))
+                                print("[ERROR] Source Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target fields: '{}'".format(old_field, old_issuetype, issuetype, new_field))
                                 if proposed_value is None:
                                     print("[INFO] Available Fields are: '{}'".format(list(issue_details_old[old_issuetype].keys())))
                                 else:
-                                    print("[PROPOSED CHANGE] Field '{}' could be renamed to '{}'".format(old_field, proposed_value))
+                                    print("[PROPOSED CHANGE] Source Field '{}' could be renamed to '{}'".format(old_field, proposed_value))
                                 template_error = 1
                                 error_processed = 1
             except:
                 print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-    
+
     if template_error == 1 and error_processed == 1:
         print("")
-    
+
     # Checking Target statuses mappings
     new_issuetype_statuses = {}
     for k, v in new_transitions.items():
@@ -3708,7 +3725,7 @@ def validate_template():
             statuses_lst.append(l[0])
             statuses_lst.append(l[2])
         new_issuetype_statuses[k] = list(set(statuses_lst))
-    
+
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             try:
@@ -3721,13 +3738,13 @@ def validate_template():
                                     status_not_found = 0
                                     break
                             if status_not_found == 1:
-                                print("[ERROR] Status '{}' has not available for '{}' Issuetype in Target project. Mapped to '{}'".format(n_status, issuetype, old_statuses))
+                                print("[ERROR] Target Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source statuses: '{}'".format(n_status, old_issuetype, issuetype, old_statuses))
                                 template_error = 1
                         except:
                             pass
             except:
                 print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-    
+
     # Checking Source statuses mappings
     old_issuetype_statuses = {}
     for k, v in old_transitions.items():
@@ -3736,7 +3753,7 @@ def validate_template():
             statuses_lst.append(l[0])
             statuses_lst.append(l[2])
         old_issuetype_statuses[k] = list(set(statuses_lst))
-    
+
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             try:
@@ -3751,7 +3768,7 @@ def validate_template():
                                         break
                                 if status_not_found == 1:
                                     proposed_value = try_to_validate(old_status, list(old_issuetype_statuses[old_issuetype]))
-                                    print("[ERROR] Status '{}' has not available for '{}' Issuetype in Target project. Mapped to '{}'".format(old_status, old_issuetype, n_status))
+                                    print("[ERROR] Source Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target statuses: '{}'".format(old_status, old_issuetype, issuetype, n_status))
                                     if proposed_value is None:
                                         print("[INFO] Available Statuses are: '{}'".format(list(old_issuetype_statuses[old_issuetype])))
                                     else:
@@ -3761,7 +3778,7 @@ def validate_template():
                                 pass
             except:
                 print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-    
+
     if template_error == 1:
         print("")
         print("[FATAL ERROR] Template filled incorectly. Please fix issues and try again.")
