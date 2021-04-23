@@ -30,7 +30,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.0'
+current_version = '3.1'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -1244,8 +1244,16 @@ def get_new_link_type(old_link):
 
 
 def migrate_links(old_issue, new_issue):
+    global project_old, project_new, jira_new
+
     outward_issue_links = {}
     inward_issue_links = {}
+    outward_issue_links_old = {}
+    inward_issue_links_old = {}
+    outward_issue_links_new = {}
+    inward_issue_links_new = {}
+    links_for_del = []
+    
     try:
         old_links = old_issue.fields.issuelinks
     except:
@@ -1257,26 +1265,70 @@ def migrate_links(old_issue, new_issue):
     
     for link in new_links:
         if hasattr(link, "outwardIssue"):
-            outward_issue_links[link.outwardIssue.key] = link.type.outward
+            if link.outwardIssue.key not in outward_issue_links:
+                outward_issue_links[link.outwardIssue.key] = {}
+            outward_issue_links[link.outwardIssue.key][link.type.name] = str(link)
         if hasattr(link, "inwardIssue"):
-            inward_issue_links[link.inwardIssue.key] = link.type.inward
+            if link.inwardIssue.key not in inward_issue_links:
+                inward_issue_links[link.inwardIssue.key] = {}
+            inward_issue_links[link.inwardIssue.key][link.type.name] = str(link)
+
     for link in old_links:
+        new_link = get_new_link_type(link.type.name)
         if hasattr(link, "outwardIssue"):
-            new_id = get_shifted_key(link.outwardIssue.key.replace(project_old, project_new))
+            new_id = get_shifted_key(link.outwardIssue.key).replace(project_old, project_new)
+            if new_id not in outward_issue_links_old.keys():
+                outward_issue_links_old[new_id] = []
+            outward_issue_links_old[new_id].append(new_link)
             if new_id not in outward_issue_links.keys() or (new_id in outward_issue_links.keys()
-                                                            and link.type.outward.lower() != outward_issue_links[new_id].lower()):
+                                                            and new_link not in outward_issue_links[new_id].keys()):
                 try:
-                    jira_new.create_issue_link(get_new_link_type(link.type.name), new_issue.key, new_id)
+                    jira_new.create_issue_link(new_link, new_issue.key, new_id)
                 except:
                     pass
+                
         if hasattr(link, "inwardIssue"):
-            new_id = get_shifted_key(link.inwardIssue.key.replace(project_old, project_new))
+            new_id = get_shifted_key(link.inwardIssue.key).replace(project_old, project_new)
+            if new_id not in inward_issue_links_old:
+                inward_issue_links_old[new_id] = []
+            inward_issue_links_old[new_id].append(new_link)
             if new_id not in inward_issue_links.keys() or (new_id in inward_issue_links.keys()
-                                                           and link.type.inward.lower() != inward_issue_links[new_id].lower()):
+                                                           and new_link not in inward_issue_links[new_id].keys()):
                 try:
-                    jira_new.create_issue_link(get_new_link_type(link.type.name), new_id, new_issue.key)
+                    jira_new.create_issue_link(new_link, new_id, new_issue.key)
                 except:
                     pass
+
+    try:
+        new_links = new_issue.fields.issuelinks
+    except:
+        new_links = []
+
+    for link in new_links:
+        if hasattr(link, "outwardIssue"):
+            if link.outwardIssue.key not in outward_issue_links_new:
+                outward_issue_links_new[link.outwardIssue.key] = {}
+            outward_issue_links_new[link.outwardIssue.key][link.type.name] = str(link)
+        if hasattr(link, "inwardIssue"):
+            if link.inwardIssue.key not in inward_issue_links_new:
+                inward_issue_links_new[link.inwardIssue.key] = {}
+            inward_issue_links_new[link.inwardIssue.key][link.type.name] = str(link)
+
+    for k, v in outward_issue_links_new.items():
+        for link_type, id in v.items():
+            if link_type not in outward_issue_links_old[k]:
+                links_for_del.append(str(id))
+    
+    for k, v in inward_issue_links_new.items():
+        for link_type, id in v.items():
+            if link_type not in inward_issue_links_old[k]:
+                links_for_del.append(str(id))
+                
+    for link in links_for_del:
+        try:
+            jira_new.delete_issue_link(link)
+        except:
+            pass
 
 
 def migrate_attachments(old_issue, new_issue, retry=True):
@@ -1513,7 +1565,13 @@ def process_issue(key, reprocess=False):
                                     if parent_issue_old.fields.issuetype.name in v:
                                         process_issue(parent.replace(project_new, project_old), reprocess=True)
                                         break
-                            parent_issue = jira_new.issue(parent)
+                            try:
+                                parent_issue = jira_new.issue(parent)
+                            except:
+                                if dummy_parent != '':
+                                    parent = dummy_parent
+                                    dummy_process = 1
+                                parent_issue = jira_new.issue(parent)
                         except:
                             print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
                             delete_issue(new_issue_key)
@@ -1569,7 +1627,13 @@ def process_issue(key, reprocess=False):
                                     if parent_issue_old.fields.issuetype.name in v:
                                         process_issue(parent.replace(project_new, project_old), reprocess=True)
                                         break
-                            parent_issue = jira_new.issue(parent)
+                            try:
+                                parent_issue = jira_new.issue(parent)
+                            except:
+                                if dummy_parent != '':
+                                    parent = dummy_parent
+                                    dummy_process = 1
+                                parent_issue = jira_new.issue(parent)
                         except:
                             print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
                             delete_issue(new_issue_key)
@@ -2507,18 +2571,18 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         user = {}
         created = datetime.datetime.strptime(log['created'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
         if created not in existed_histories:
-            user_name = log['author']['name'].upper()
-            history["author"] = user_name
-            if user_name not in users_set and user_name not in already_processed_users:
-                user["name"] = user_name
-                user["fullname"] = log['author']['displayName']
-                user["email"] = log['author']['emailAddress']
-                user["active"] = log['author']['active']
-                user["groups"] = ["jira-users"]
-                users_set.add(user_name)
-                already_processed_users.add(user_name)
-                users.append(user)
-            history["author"] = user_name
+            if 'author' in log:
+                user_name = log['author']['name'].upper()
+                if user_name not in users_set and user_name not in already_processed_users:
+                    user["name"] = user_name
+                    user["fullname"] = log['author']['displayName']
+                    user["email"] = log['author']['emailAddress']
+                    user["active"] = log['author']['active']
+                    user["groups"] = ["jira-users"]
+                    users_set.add(user_name)
+                    already_processed_users.add(user_name)
+                    users.append(user)
+                history["author"] = user_name
             created = datetime.datetime.strptime(log['created'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
             history["created"] = created
             history["items"] = []
@@ -2546,17 +2610,18 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         user = {}
         created = datetime.datetime.strptime(log['started'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
         if created not in existed_worklogs:
-            user_name = log['author']['name'].upper()
-            if user_name not in users_set and user_name not in already_processed_users:
-                user["name"] = user_name
-                user["fullname"] = log['author']['displayName']
-                user["email"] = log['author']['emailAddress']
-                user["active"] = log['author']['active']
-                user["groups"] = ["jira-users"]
-                users_set.add(user_name)
-                already_processed_users.add(user_name)
-                users.append(user)
-            worklog["author"] = user_name
+            if 'author' in log:
+                user_name = log['author']['name'].upper()
+                if user_name not in users_set and user_name not in already_processed_users:
+                    user["name"] = user_name
+                    user["fullname"] = log['author']['displayName']
+                    user["email"] = log['author']['emailAddress']
+                    user["active"] = log['author']['active']
+                    user["groups"] = ["jira-users"]
+                    users_set.add(user_name)
+                    already_processed_users.add(user_name)
+                    users.append(user)
+                worklog["author"] = user_name
             worklog["startDate"] = datetime.datetime.strptime(log['started'], '%Y-%m-%dT%H:%M:%S.%f%z').astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f%z')
             worklog["timeSpent"] = get_duration(log["timeSpent"])
             try:
@@ -2717,12 +2782,12 @@ def get_correct_components(components):
     new_components = jira_new.project_components(project_new)
     new_components_lst = []
     for new_component in new_components:
-        new_components_lst.append(new_component.name)
+        new_components_lst.append(new_component.name.strip())
     
     new_components_detail = []
     for component in components:
         if component['name'] in new_components_lst:
-            new_components.append({"name": component['name']})
+            new_components_detail.append({"name": component['name'].strip()})
     return new_components_detail
 
 
@@ -2732,12 +2797,12 @@ def get_correct_versions(versions):
     new_versions = jira_new.project_versions(project_new)
     new_versions_lst = []
     for new_version in new_versions:
-        new_versions_lst.append(new_version.name)
+        new_versions_lst.append(new_version.name.strip())
     
     new_versions_detail = []
     for version in versions:
         if version['name'] in new_versions_lst:
-            new_versions_detail.append({"name": version['name']})
+            new_versions_detail.append({"name": version['name'].strip()})
     return new_versions_detail
 
 
@@ -2798,7 +2863,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for v in value:
                 if hasattr(v, 'name'):
                     if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(v) != [])
-                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
+                        or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     cont_value.append({"value": get_new_value_from_mapping(v.value, new_field)})
@@ -2829,6 +2894,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         global fields_mappings, issue_details_old, issue_details_new, max_retries, default_max_retries
         value = None
         concatenated_value = None
+        processed = False
         
         def get_value(field, new_field=new_field, old_issue=old_issue, old_issuetype=old_issuetype):
             global issue_details_old, issue_details_new
@@ -2841,7 +2907,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value = eval('old_issue.fields.' + field.strip())
                 except:
                     value = None
-            if value is None:
+            if value is None and field not in ['Source Status', 'Source Issuetype']:
                 try:
                     temp = issue_details_old[old_issuetype][field]['type']
                 except:
@@ -2974,10 +3040,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         except:
             return old_field
         for fields in old_field:
-            if 'issuetype.name' in fields:
-                return get_new_value_from_mapping(old_issuetype, new_field)
-            if 'issuetype.status' in fields:
-                return get_new_value_from_mapping(old_issuetype, new_field)
+            if 'issuetype.name' in fields and issue_details_new[new_issuetype][new_field]['type'] != 'string' and issue_details_new[new_issuetype][new_field]['type'] != 'array':
+                try:
+                    value_type = get_str_from_lst(old_issue.fields.issuetype.name)
+                except:
+                    value_type = None
+                return value_type
+            if 'issuetype.status' in fields and issue_details_new[new_issuetype][new_field]['type'] != 'string' and issue_details_new[new_issuetype][new_field]['type'] != 'array':
+                try:
+                    value_status = get_str_from_lst(old_issue.fields.status.name)
+                except:
+                    value_status = None
+                return value_status
         if old_field == '':
             try:
                 old_field = [issue_details_old[old_issuetype][new_field.strip()].key()]
@@ -2986,66 +3060,85 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     val = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field.strip()]['id'])
                     return val
                 return value
-        if len(old_field) > 1:
-            for o_field in old_field:
-                if issue_details_new[new_issuetype][new_field]['type'] == 'string':
-                    if concatenated_value is None:
-                        if new_field != 'Description':
-                            concatenated_value = ''
-                        else:
-                            try:
-                                concatenated_value = data_val['description'] + '\r\n----\r\n'
-                            except:
-                                concatenated_value = '----\r\n'
+        for o_field in old_field:
+            if 'issuetype.name' in o_field or 'issuetype.status' in o_field:
+                if 'issuetype.name' in o_field:
+                    o_field = 'Source Issuetype'
+                    try:
+                        o_field_val = get_str_from_lst(old_issue.fields.issuetype.name)
+                    except:
+                        o_field_val = get_new_value_from_mapping(old_issuetype, new_field)
+                elif 'issuetype.status' in o_field:
+                    o_field = 'Source Status'
+                    try:
+                        o_field_val = get_str_from_lst(old_issue.fields.status.name)
+                    except:
+                        o_field_val = ''
+                processed = True
+            if issue_details_new[new_issuetype][new_field]['type'] == 'string':
+                if concatenated_value is None:
+                    if new_field != 'Description':
+                        concatenated_value = ''
+                    else:
+                        try:
+                            concatenated_value = data_val['description'] + '\r\n----\r\n'
+                        except:
+                            concatenated_value = '----\r\n'
+                if processed is True:
+                    added_value = '' if o_field_val is None else o_field_val
+                else:
                     added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
-                    if new_field == 'Description':
-                        concatenated_value += '' if added_value == '' else '\r\n *[' + o_field + ']:* ' + added_value
+                if new_field == 'Description':
+                    concatenated_value += '' if added_value == '' else '\r\n *[' + o_field + ']:* ' + added_value
+                else:
+                    concatenated_value += '' if get_str_from_lst(added_value) == '' else '[' + o_field + ']: ' + get_str_from_lst(added_value) + ' '
+            elif issue_details_new[new_issuetype][new_field]['type'] == 'number':
+                if concatenated_value is None:
+                    concatenated_value = 0
+                concatenated_value += 0 if get_value(o_field) is None else get_value(o_field)
+            elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
+                if concatenated_value is None:
+                    if new_field != 'Labels' or (new_field == 'Labels' and data_val['labels'] is None):
+                        concatenated_value = []
                     else:
-                        concatenated_value += '' if get_str_from_lst(added_value) == '' else '[' + o_field + ']: ' + get_str_from_lst(added_value) + ' '
-                elif issue_details_new[new_issuetype][new_field]['type'] == 'number':
-                    if concatenated_value is None:
-                        concatenated_value = 0
-                    concatenated_value += 0 if get_value(o_field) is None else get_value(o_field)
-                elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
-                    if concatenated_value is None:
-                        if new_field != 'Labels' or (new_field == 'Labels' and data_val['labels'] is None):
-                            concatenated_value = []
-                        else:
-                            concatenated_value = data_val['labels']
-                    if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
+                        concatenated_value = data_val['labels']
+                if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
+                    if processed is True:
+                        label_add_value = o_field_val
+                    else:
                         label_add_value = get_value(o_field)
-                        if label_add_value is not None and type(label_add_value) == list:
-                            concatenated_value.extend([i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in label_add_value])
-                        else:
-                            concatenated_value.append('' if label_add_value is None else str(label_add_value).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
-                    elif issue_details_new[new_issuetype][new_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
-                        value = str(get_value(o_field)).replace(' ', '_').replace('\n', '_').replace('\t', '_')
-                        if value not in get_lm_field_values(new_field, new_issuetype):
-                            add_lm_field_value(value, new_field, new_issuetype)
-                        concatenated_value.append(value)
+                    if label_add_value is not None and type(label_add_value) == list:
+                        concatenated_value.extend([i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in label_add_value])
                     else:
-                        concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)))
+                        try:
+                            values = label_add_value.split(',')
+                            for value in values:
+                                concatenated_value.append('' if value is None else str(value).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                        except:
+                            if label_add_value is not None:
+                                concatenated_value.append('' if label_add_value is None else str(label_add_value).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
+                elif issue_details_new[new_issuetype][new_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
+                    if processed is True:
+                        value = str(o_field_val).replace(' ', '_').replace('\n', '_').replace('\t', '_')
+                    else:
+                        try:
+                            values = get_value(o_field).split(',')
+                            for val in values:
+                                value = str(val).strip().replace(' ', '_').replace('\n', '_').replace('\t', '_')
+                                if value not in get_lm_field_values(new_field, new_issuetype):
+                                    add_lm_field_value(value, new_field, new_issuetype)
+                                concatenated_value.append(value)
+                        except:
+                            value = get_value(o_field)
+                            if value is not None:
+                                concatenated_value.append(value)
                 else:
-                    value = str(get_value(o_field))
-                    if value != '':
-                        return value
-            value = concatenated_value
-        else:
-            if new_field == 'Description':
-                added_description = get_value(old_field[0]) if get_value(old_field[0]) is not None else '...'
-                if 'description' in data_val.keys() and '----\r\n' in data_val['description']:
-                    value = data_val['description'] + ' *[' + old_field[0] + ']:* ' + added_description
-                elif 'description' in data_val.keys():
-                    value = data_val['description'] + '\r\n----\r\n *[' + old_field[0] + ']:* ' + added_description
-                else:
-                    value = added_description
-                return value
-            elif new_field == 'Labels' and 'labels' in data_val.keys():
-                concatenated_value = data_val['labels']
-                concatenated_value.append('' if get_value(old_field[0]) is None else str(get_value(old_field[0])).replace(' ', '_').replace('\n', '_').replace('\t', '_'))
-                value = concatenated_value
-                return value
-            value = get_value(old_field[0])
+                    concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)))
+            else:
+                value = str(get_value(o_field))
+                if value != '':
+                    return value
+        value = concatenated_value
         return value
     
     def update_issuetype(issuetype, old_issuetype, new_issue=new_issue):
@@ -3176,10 +3269,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = [n_field_value.replace(' ', '_').replace('\n', '_').replace('\t', '_')]
                 elif issue_details_new[new_issuetype][n_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
                     if type(n_field_value) == list and n_field_value != '':
-                        n_field_value = str(o_field_value).replace(' ', '_').replace('\n', '_').replace('\t', '_')
-                    if n_field_value not in get_lm_field_values(n_field, new_issuetype):
-                        add_lm_field_value(n_field_value, n_field, new_issuetype)
-                    data_value = [n_field_value]
+                        data_value = n_field_value
+                    else:
+                        data_value = [n_field_value.replace(' ', '_').replace('\n', '_').replace('\t', '_')]
                 elif issue_details_new[issuetype][n_field]['custom type'] == 'multiselect':
                     if issue_details_new[new_issuetype][n_field]['validated'] is True and n_field_value is not None:
                         data_value = []
@@ -3254,25 +3346,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if new_team == '':
             new_team = None
             data_val.pop(issue_details_new[issuetype]['Team']['id'], None)
-        try:
-            old_team = eval('old_issue.fields.' + issue_details_old[old_issuetype][fields_mappings[old_issuetype]['Team'][0]]['id'])
-            if type(old_team) == list:
-                old_team = old_team[0]
-            try:
-                old_team = old_team.value.upper()
-            except:
-                try:
-                    old_team = old_team.name.upper()
-                except:
-                    old_team = old_team.upper()
-            if issue_details_old[old_issuetype][fields_mappings[old_issuetype]['Team'][0]]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
-                old_team = get_team_name(old_team).upper()
-        except:
-            old_team = None
-        if new_team != old_team and new_existent_team is None:
+        if new_team != new_existent_team and new_existent_team is None:
             if verbose_logging == 1:
                 print("[INFO] Team would be updated to '{}'".format(new_team))
-        elif json_importer_flag == 1 and new_team != old_team and new_existent_team is not None:
+        elif json_importer_flag == 1 and new_team != new_existent_team and new_existent_team is not None:
             new_key = new_issue.key
             delete_issue(new_key)
             return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
@@ -3328,7 +3405,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         for version in data_val['fixVersions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['fixVersions'] = get_correct_versions(temp_versions)
-    if 'components' in data_val.keys() and data_val['components'] != []:
+    if 'components' in data_val.keys() and data_val['components'] != [] and data_val['components'] is not None:
         temp_components = []
         for component in data_val['components']:
             temp_components.append({'name': component['name'].strip()})
@@ -3652,7 +3729,7 @@ def validate_template():
                 if o_type == old_issuetype:
                     type_not_found = 0
                     break
-            if type_not_found == 1:
+            if type_not_found == 1 and issuetype != '':
                 print("[ERROR] Issuetype '{}' is not available in Source project. Mapped to '{}'".format(old_issuetype, issuetype))
                 proposed_value = try_to_validate(old_issuetype, list(issue_details_old.keys()))
                 if proposed_value is None:
@@ -3661,7 +3738,7 @@ def validate_template():
                     print("[PROPOSED CHANGE] Issuetype '{}' could be renamed to '{}'".format(old_issuetype, proposed_value))
                 template_error = 1
                 error_processed = 1
-
+    
     if template_error == 1 and error_processed == 1:
         print("")
         error_processed = 0
@@ -3685,8 +3762,9 @@ def validate_template():
                             template_error = 1
                             error_processed = 1
             except:
-                print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-
+                if issuetype != '':
+                    print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+    
     # Checking Source field mappings
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
@@ -3702,7 +3780,7 @@ def validate_template():
                                         break
                             except:
                                 field_not_found = 1
-                            if field_not_found == 1:
+                            if field_not_found == 1 and issuetype != '':
                                 proposed_value = try_to_validate(old_field, list(issue_details_old[old_issuetype].keys()))
                                 print("[ERROR] Source Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target fields: '{}'".format(old_field, old_issuetype, issuetype, new_field))
                                 if proposed_value is None:
@@ -3712,11 +3790,12 @@ def validate_template():
                                 template_error = 1
                                 error_processed = 1
             except:
-                print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-
+                if issuetype != '':
+                    print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+    
     if template_error == 1 and error_processed == 1:
         print("")
-
+    
     # Checking Target statuses mappings
     new_issuetype_statuses = {}
     for k, v in new_transitions.items():
@@ -3725,7 +3804,7 @@ def validate_template():
             statuses_lst.append(l[0])
             statuses_lst.append(l[2])
         new_issuetype_statuses[k] = list(set(statuses_lst))
-
+    
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             try:
@@ -3743,8 +3822,9 @@ def validate_template():
                         except:
                             pass
             except:
-                print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-
+                if issuetype != '':
+                    print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+    
     # Checking Source statuses mappings
     old_issuetype_statuses = {}
     for k, v in old_transitions.items():
@@ -3753,7 +3833,7 @@ def validate_template():
             statuses_lst.append(l[0])
             statuses_lst.append(l[2])
         old_issuetype_statuses[k] = list(set(statuses_lst))
-
+    
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             try:
@@ -3766,7 +3846,7 @@ def validate_template():
                                     if old_status.upper() == o_status.upper():
                                         status_not_found = 0
                                         break
-                                if status_not_found == 1:
+                                if status_not_found == 1 and issuetype != '':
                                     proposed_value = try_to_validate(old_status, list(old_issuetype_statuses[old_issuetype]))
                                     print("[ERROR] Source Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target statuses: '{}'".format(old_status, old_issuetype, issuetype, n_status))
                                     if proposed_value is None:
@@ -3777,8 +3857,9 @@ def validate_template():
                             except:
                                 pass
             except:
-                print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-
+                if issuetype != '':
+                    print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+    
     if template_error == 1:
         print("")
         print("[FATAL ERROR] Template filled incorectly. Please fix issues and try again.")
@@ -4172,7 +4253,7 @@ def main_program():
         print("[INFO] Only last updated issues will be processed. Other options will be skipped.")
         print("")
     else:
-        if processing_jira_jql != '':
+        if processing_jira_jql != '' and processing_jira_jql != "key in ()":
             recently_updated_for_jql = ''
             if last_updated_days_check == 1:
                 recently_updated_for_jql = " AND updated >= startOfDay(-{})".format(recently_updated_days)
