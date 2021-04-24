@@ -22,6 +22,7 @@ import isodate
 import time
 from time import sleep
 import requests
+import urllib.parse
 import urllib3
 from bs4 import BeautifulSoup
 import json
@@ -30,7 +31,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.1'
+current_version = '3.2'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -350,7 +351,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 
 def get_transitions(project, jira_url, new=False):
-    global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify
+    global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify, verbose_logging
     global replace_complete_statuses_flag
     
     print("[START] Retrieving Transitions and Statuses for {} '{}' project from JIRA.".format('Target' if new is True else 'Source', project))
@@ -381,8 +382,8 @@ def get_transitions(project, jira_url, new=False):
         transitions = {}
         for workflow_name, workflow_details in get_workflows(project, jira_url, new).items():
             for issuetype in workflow_details:
-                url0 = jira_url + '//rest/projectconfig/1/workflow?workflowName=' + workflow_name + '&projectKey=' + project
-                url1 = jira_url + '/rest/projectconfig/1/workflow?workflowName=' + workflow_name + '&projectKey=' + project
+                url0 = jira_url + '//rest/projectconfig/1/workflow?workflowName=' + urllib.parse.quote_plus(workflow_name) + '&projectKey=' + project
+                url1 = jira_url + '/rest/projectconfig/1/workflow?workflowName=' + urllib.parse.quote_plus(workflow_name) + '&projectKey=' + project
                 r = requests.get(url0, auth=auth, headers=headers, verify=verify)
                 if r.status_code == 200:
                     workflow_string = r.content.decode('utf-8')
@@ -422,6 +423,8 @@ def get_transitions(project, jira_url, new=False):
         migrate_statuses_check = 0
         print("[WARNING] No PROJECT ADMIN right for the {} '{}' project. Statuses WILL NOT be updated / migrated.".format('Target' if new is True else 'Source', project))
         print("[ERROR] Transitions and Statuses can't be retrieved due to '{}'".format(e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
 
 
 def get_hierarchy_config():
@@ -805,6 +808,8 @@ def grouper(iterable, n, fill_value=None):
 
 def create_temp_folder(folder):
     """Create temp local folder for temporarily store attachments"""
+    global verbose_logging
+    
     local_folder = folder
     if os.path.exists(local_folder):
         for filename in os.listdir(local_folder):
@@ -816,6 +821,8 @@ def create_temp_folder(folder):
                     shutil.rmtree(file_path)
             except Exception as e:
                 print('Failed to delete %s. Reason: %s' % (file_path, e))
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
         print("[INFO] Folder '{}' has been cleaned up.".format(local_folder))
         print("")
     else:
@@ -830,7 +837,8 @@ def clean_temp_folder(folder):
 
 
 def get_jira_connection():
-    global auth, threads, verify, create_remote_link_for_old_issue, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, jira_old, jira_new, atlassian_jira_old
+    global auth, threads, verify, create_remote_link_for_old_issue, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW
+    global jira_old, jira_new, atlassian_jira_old, verbose_logging
     
     # Check SSL certification and use unsecured connection if not available
     try:
@@ -850,17 +858,20 @@ def get_jira_connection():
             jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
         except Exception as e:
             print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             os.system("pause")
             exit()
         if create_remote_link_for_old_issue == 1 or migrate_attachments_check == 1:
             atlassian_jira_old = jira.Jira(JIRA_BASE_URL_OLD, username=username, password=password)
     except Exception as e:
         print("[ERROR] Login to JIRA failed. JIRA is unavailable or credentials are invalid. Exception: '{}'".format(e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         os.system("pause")
         exit()
     jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
     jira_new = JIRA(JIRA_BASE_URL_NEW, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=3, options={'verify': verify})
-
 
 def get_total_teams():
     global auth, headers, verify
@@ -994,6 +1005,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
     
     def create_sprint(data):
         global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify, jira_old, project_old
+        global verbose_logging
         
         url = JIRA_BASE_URL_NEW + JIRA_sprint_api
         try:
@@ -1015,10 +1027,12 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
             return (0, data)
         except Exception as e:
             print('Exception: {}'.format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (1, data)
     
     def update_sprint(data):
-        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify
+        global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify, verbose_logging
         
         sprint_id, body, closed = data
         url = JIRA_BASE_URL_NEW + JIRA_sprint_api + str(sprint_id)
@@ -1039,6 +1053,8 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
                 new_sprints[new_sprint['name']] = {"state": new_sprint['state']}
             return (0, data)
         except Exception as e:
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (0, data)
     
     start_time = time.time()
@@ -1130,7 +1146,7 @@ def migrate_sprints(board_id=old_board_id, proj_old=None, project=project_new, n
 
 
 def migrate_components():
-    global jira_new, jira_old, max_retries, default_max_retries, project_old, project_new
+    global jira_new, jira_old, max_retries, default_max_retries, project_old, project_new, verbose_logging
     
     print("[START] Components migration has been started.")
     old_components = jira_old.project_components(project_old)
@@ -1145,6 +1161,8 @@ def migrate_components():
                 jira_new.create_component(name.strip(), project, description=description, leadUserName=lead_name, assigneeType=assignee_type, isAssigneeTypeValid=assignee_valid)
             except Exception as e:
                 print('Exception: {}'.format(e.text))
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
             return (0, data)
         except:
             return (1, data)
@@ -1172,7 +1190,7 @@ def migrate_components():
 
 
 def migrate_versions():
-    global jira_new, jira_old
+    global jira_new, jira_old, verbose_logging
     
     print("[START] FixVersions (Releases) migration has been started.")
     old_versions = jira_old.project_versions(project_old)
@@ -1187,6 +1205,8 @@ def migrate_versions():
             return (0, data)
         except Exception as e:
             print('Exception: {}'.format(e.text))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (1, data)
     
     versions = []
@@ -1245,7 +1265,7 @@ def get_new_link_type(old_link):
 
 def migrate_links(old_issue, new_issue):
     global project_old, project_new, jira_new
-
+    
     outward_issue_links = {}
     inward_issue_links = {}
     outward_issue_links_old = {}
@@ -1272,7 +1292,7 @@ def migrate_links(old_issue, new_issue):
             if link.inwardIssue.key not in inward_issue_links:
                 inward_issue_links[link.inwardIssue.key] = {}
             inward_issue_links[link.inwardIssue.key][link.type.name] = str(link)
-
+    
     for link in old_links:
         new_link = get_new_link_type(link.type.name)
         if hasattr(link, "outwardIssue"):
@@ -1286,7 +1306,7 @@ def migrate_links(old_issue, new_issue):
                     jira_new.create_issue_link(new_link, new_issue.key, new_id)
                 except:
                     pass
-                
+        
         if hasattr(link, "inwardIssue"):
             new_id = get_shifted_key(link.inwardIssue.key).replace(project_old, project_new)
             if new_id not in inward_issue_links_old:
@@ -1298,12 +1318,12 @@ def migrate_links(old_issue, new_issue):
                     jira_new.create_issue_link(new_link, new_id, new_issue.key)
                 except:
                     pass
-
+    
     try:
         new_links = new_issue.fields.issuelinks
     except:
         new_links = []
-
+    
     for link in new_links:
         if hasattr(link, "outwardIssue"):
             if link.outwardIssue.key not in outward_issue_links_new:
@@ -1313,17 +1333,17 @@ def migrate_links(old_issue, new_issue):
             if link.inwardIssue.key not in inward_issue_links_new:
                 inward_issue_links_new[link.inwardIssue.key] = {}
             inward_issue_links_new[link.inwardIssue.key][link.type.name] = str(link)
-
+    
     for k, v in outward_issue_links_new.items():
         for link_type, id in v.items():
-            if link_type not in outward_issue_links_old[k]:
+            if k in outward_issue_links_old.keys() and link_type not in outward_issue_links_old[k]:
                 links_for_del.append(str(id))
     
     for k, v in inward_issue_links_new.items():
         for link_type, id in v.items():
-            if link_type not in inward_issue_links_old[k]:
+            if k in inward_issue_links_old.keys() and link_type not in inward_issue_links_old[k]:
                 links_for_del.append(str(id))
-                
+    
     for link in links_for_del:
         try:
             jira_new.delete_issue_link(link)
@@ -1332,12 +1352,15 @@ def migrate_links(old_issue, new_issue):
 
 
 def migrate_attachments(old_issue, new_issue, retry=True):
-    global temp_dir_name, jira_old, JIRA_attachment_api, atlassian_jira_old
-    new_attachments = []
+    global temp_dir_name, jira_old, JIRA_attachment_api, atlassian_jira_old, verbose_logging, jira_new
+    
+    new_attachments = {}
+    old_attachments = {}
+    
     if new_issue.fields.attachment:
         for new_attachment in new_issue.fields.attachment:
             try:
-                new_attachments.append(new_attachment.filename)
+                new_attachments[new_attachment.id] = new_attachment.filename
             except:
                 pass
     
@@ -1347,7 +1370,8 @@ def migrate_attachments(old_issue, new_issue, retry=True):
     try:
         if old_issue.fields.attachment:
             for attachment in old_issue.fields.attachment:
-                if attachment.filename not in new_attachments:
+                old_attachments[attachment.id] = attachment.filename
+                if attachment.filename not in new_attachments.values():
                     file = attachment.get()
                     filename = attachment.filename
                     temp_name = 'temp_' + attachment.id
@@ -1381,28 +1405,38 @@ def migrate_attachments(old_issue, new_issue, retry=True):
                                 attachments[item["from"]]["name"] = item["fromString"]
             
             for k, v in attachments.items():
-                if "added" in v.keys() and v["name"] not in new_attachments and ("removed" not in v.keys() or ("removed" in v.keys() and v["added"] > v["removed"])):
+                old_attachments[k] = v["name"]
+                if "added" in v.keys() and v["name"] not in new_attachments.values() and ("removed" not in v.keys() or ("removed" in v.keys() and v["added"] > v["removed"])):
                     attachment = atlassian_jira_old.get_attachment(k)
-                    file_url = attachment["content"]
-                    r = requests.get(file_url, allow_redirects=True)
-                    filename = attachment["filename"]
-                    temp_name = 'temp_' + k
-                    full_name = os.path.join(temp_dir_name, temp_name)
-                    with open(full_name, 'wb') as f:
-                        f.write(r.content)
-                    with open(full_name, 'rb') as file_new:
-                        jira_new.add_attachment(new_issue.key, file_new, filename)
-                    if os.path.exists(full_name):
-                        os.remove(full_name)
+                    if 'content' in attachment and 'filename' in attachment and v["name"] == attachment["filename"]:
+                        file_url = attachment["content"]
+                        r = requests.get(file_url, allow_redirects=True)
+                        filename = attachment["filename"]
+                        temp_name = 'temp_' + k
+                        full_name = os.path.join(temp_dir_name, temp_name)
+                        with open(full_name, 'wb') as f:
+                            f.write(r.content)
+                        with open(full_name, 'rb') as file_new:
+                            jira_new.add_attachment(new_issue.key, file_new, filename)
+                        if os.path.exists(full_name):
+                            os.remove(full_name)
+        
         except Exception as e:
             if retry is True:
                 migrate_attachments(old_issue, new_issue, retry=False)
             else:
                 print("[ERROR] Attachments from '{}' issue can't be loaded due to: '{}'.".format(old_issue.key, e))
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
+    
+    for id, new_name in new_attachments.items():
+        if new_name not in old_attachments.values():
+            jira_new.delete_attachment(id)
+
 
 
 def migrate_status(new_issue, old_issue):
-    global new_transitions
+    global new_transitions, verbose_logging
     
     def find_shortest_path(graph, start, end, path):
         path = path + [start]
@@ -1460,6 +1494,8 @@ def migrate_status(new_issue, old_issue):
                     jira_new.transition_issue(new_issue, transition=s)
                 except Exception as e:
                     print("[ERROR] Status can't be changed due to '{}'".format(e.text))
+                    if verbose_logging == 1:
+                        print(traceback.format_exc())
                     return
 
 
@@ -1486,11 +1522,14 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
         print("[ERROR] Mapping of '{}' Source Status to the correct Target Status hasn't been found! Default '{}' Status would be used instead.".format(status, default_status))
         return default_status
     
-    for n_status, o_statuses in status_mappings[old_issue_type].items():
-        for o_status in o_statuses:
-            if old_status.upper() == o_status.upper() and n_status != '':
-                return n_status
-    if new_issue_type is not None:
+    try:
+        for n_status, o_statuses in status_mappings[old_issue_type].items():
+            for o_status in o_statuses:
+                if old_status.upper() == o_status.upper() and n_status != '':
+                    return n_status
+        if new_issue_type is not None:
+            return get_status(new_issue_type, old_status)
+    except:
         return get_status(new_issue_type, old_status)
     return None
 
@@ -1530,6 +1569,7 @@ def process_issue(key, reprocess=False):
             if json_importer_flag == 1 or migrate_metadata_check == 1:
                 issue_type = old_issue.fields.issuetype.name
                 new_issue_type = get_new_issuetype(issue_type)
+                new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
         except:
             try:
                 if json_importer_flag == 0:
@@ -1542,7 +1582,6 @@ def process_issue(key, reprocess=False):
             new_issue = jira_new.issue(new_issue_key, expand="changelog")
             if json_importer_flag == 1:
                 issue_type = old_issue.fields.issuetype.name
-                new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
                 if new_issue_type in sub_tasks.keys() and new_issue_type != new_issue.fields.issuetype.name:
                     try:
                         parent_field = old_issue.fields.parent
@@ -1597,6 +1636,8 @@ def process_issue(key, reprocess=False):
         except Exception as e:
             if json_importer_flag == 0:
                 print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
                 return(0, key)
             else:
                 parent = None
@@ -1664,6 +1705,8 @@ def process_issue(key, reprocess=False):
                                 if key not in failed_issues:
                                     failed_issues.append(key)
                                     print("[WARNING] Issue '{}' can't be processed. Will be re-tried later. Details: '{}'".format(new_issue_key, e))
+                                    if verbose_logging == 1:
+                                        print(traceback.format_exc())
                                     return(0, key)
                                 print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
                                 return(1, key)
@@ -1679,7 +1722,9 @@ def process_issue(key, reprocess=False):
             try:
                 migrate_status(new_issue, old_issue)
             except Exception as e:
-                print(e)
+                print("[ERROR] Status can't be migrated due to: '{}'".format(e))
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
         if create_remote_link_for_old_issue == 1:
             remote_link_exist = 0
             try:
@@ -1968,7 +2013,7 @@ def create_excel_sheet(sheet_data, title):
 
 def save_excel():
     """Saving prepared Excel File. Applying zooming / scaling upon saving."""
-    global zoom_scale, mapping_file, project_old, project_new
+    global zoom_scale, mapping_file, project_old, project_new, verbose_logging
     try:
         if mapping_file == '':
             mapping_file = "Mappings '{}'-'{}'.xlsx".format(project_old, project_new)
@@ -1985,6 +2030,8 @@ def save_excel():
         sleep(2)
         exit()
     except Exception as e:
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         print('')
         print("[ERROR] ", e)
         os.system("pause")
@@ -2011,15 +2058,16 @@ def get_minfields_issuetype(issue_details, all=0):
         return i_types
 
 
-def get_dummy_parent():
+def get_dummy_parent(retry=False):
     global project_old, skip_migrated_flag, jira_new, jira_old, issue_details_new, issuetypes_mappings, dummy_parent
     global project_new, auth, headers, verify, json_importer_flag, max_number_for_dummy_parent_search, dummy_process
-    global start_jira_key
+    global start_jira_key, verbose_logging
     
     if dummy_parent != '':
         return
     
-    print("[START] Searching / creating Dummy Parent for orphan Sub-Tasks.")
+    if retry is False:
+        print("[START] Searching / creating Dummy Parent for orphan Sub-Tasks.")
     jql_new = "project = {} AND summary ~ DUMMY_PARENT".format(project_new)
     # jql_new = "summary ~ DUMMY_PARENT"  # if one Dummy parent to be created - that line could be used instead
     parent = get_issues_by_jql(jira_new, jql_new, max_result=1)
@@ -2083,7 +2131,12 @@ def get_dummy_parent():
             if str(r.status_code) == '202':
                 dummy_parent = parent_key
                 dummy_process = 0
+            else:
+                get_dummy_parent(retry=True)
+                return
         except Exception as e:
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             print("[ERROR] JSON Importer error: '{}'".format(e))
             dummy_parent = None
         
@@ -2093,7 +2146,7 @@ def get_dummy_parent():
 
 
 def delete_issue(key):
-    global JIRA_BASE_URL_NEW, auth, threads, verify
+    global JIRA_BASE_URL_NEW, auth, threads, verify, verbose_logging
     
     jira_auth = JIRA(JIRA_BASE_URL_NEW, auth=auth, async_workers=threads, max_retries=3, options={'verify': verify})
     try:
@@ -2101,6 +2154,8 @@ def delete_issue(key):
         issue.delete(deleteSubtasks=True)
         return (0, key)
     except Exception as e:
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         return (1, key)
 
 
@@ -2143,7 +2198,7 @@ def delete_extra_issues(max_id):
 
 def create_dummy_issues(total_number, batch_size=100):
     """Creating Dummy Issue with all defaulted mandatory fields + specific Summary for further processing."""
-    global issue_details_new, max_retries, default_max_retries, project_new
+    global issue_details_new, max_retries, default_max_retries, project_new, verbose_logging
     
     def create_issues(data_lst):
         global jira_new, verbose_logging
@@ -2155,6 +2210,8 @@ def create_dummy_issues(total_number, batch_size=100):
             return (0, data_lst)
         except Exception as e:
             print("[ERROR] Issues can't be created due to '{}'".format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (1, data_lst)
     
     if total_number == 0:
@@ -2208,7 +2265,7 @@ def create_dummy_issues(total_number, batch_size=100):
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
     """ This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. """
-    global auth, verify, json_importer_flag
+    global auth, verify, json_importer_flag, verbose_logging
     
     session = requests.Session()
     
@@ -2220,6 +2277,8 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
     except Exception as e:
         if json_importer_flag == 0:
             print("[ERROR] Issue '{}' can't be converted to Sub-Task. Details: '{}'.".format(new_issue.key, e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
         return
     
     url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertIssueSetIssueType.jspa'
@@ -2260,7 +2319,7 @@ def convert_to_subtask(parent, new_issue, sub_task_id):
 
 def convert_to_issue(new_issue, issuetype):
     """ This function will convert sub-task to issue via parsing HTML page and apply emulation of conversion via UI. """
-    global auth, verify, new_issues_ids
+    global auth, verify, new_issues_ids, verbose_logging
     
     session = requests.Session()
     
@@ -2271,6 +2330,8 @@ def convert_to_issue(new_issue, issuetype):
         guid = soup.find_all("input", type="hidden", id="guid")[0]['value']
     except Exception as e:
         print("[ERROR] Issue '{}' can't be converted to Issue from Sub-Task. Details: '{}'.".format(new_issue.key, e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         return
     
     url_11 = JIRA_BASE_URL_NEW + '/secure/ConvertSubTaskSetIssueType.jspa'
@@ -2312,7 +2373,7 @@ def load_config(message=True):
     """Loading pre-saved values from 'config.json' file."""
     global mapping_file, JIRA_BASE_URL_OLD, JIRA_BASE_URL_NEW, project_old, project_new, last_updated_date, start_jira_key
     global team_project_prefix, old_board_id, default_board_name, temp_dir_name, limit_migration_data, threads, pool_size
-    global template_project, new_project_name
+    global template_project, new_project_name, verbose_logging
     
     if os.path.exists(config_file) is True:
         try:
@@ -2356,6 +2417,8 @@ def load_config(message=True):
         except Exception as er:
             print("[ERROR] Configuration file is corrupted. Default '{}' would be created instead.".format(config_file))
             print('')
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             save_config()
     else:
         print("[INFO] Config File not found. Default '{}' would be created.".format(config_file))
@@ -2400,7 +2463,7 @@ def save_config(message=True):
 
 
 def get_statuses(jira_url, new=False):
-    global headers, verify, JIRA_status_api, auth, old_statuses, new_statuses
+    global headers, verify, JIRA_status_api, auth, old_statuses, new_statuses, verbose_logging
     
     statuses = {}
     try:
@@ -2415,6 +2478,8 @@ def get_statuses(jira_url, new=False):
             statuses[status["name"].upper()]["id"] = status["id"]
     except Exception as e:
         print("[ERROR] Statuses Categories can't be processed due to: '{}'.".format(e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
     
     if new is False:
         old_statuses = statuses
@@ -2451,7 +2516,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, max_json_file_size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
-    global replace_complete_statuses_flag
+    global replace_complete_statuses_flag, verbose_logging
     
     def check_status(new_status, new_issue_type):
         global new_transitions
@@ -2773,6 +2838,8 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             return (r.status_code, r.content)
         except Exception as e:
             print("[ERROR] JSON Importer error: '{}'".format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (0, e)
 
 
@@ -2819,6 +2886,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for new_value, old_values in field_value_mappings[field_name].items():
                 if str(old_value.strip()) in old_values:
                     return new_value
+            return old_value
         except:
             return old_value
     
@@ -3054,10 +3122,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 return value_status
         if old_field == '':
             try:
-                old_field = [issue_details_old[old_issuetype][new_field.strip()].key()]
+                if new_field in issue_details_old[old_issuetype].keys():
+                    old_field = [new_field]
             except:
-                if new_field == 'Sprint':
-                    val = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field.strip()]['id'])
+                if new_field == 'Sprint' and new_field in issue_details_old[old_issuetype].keys():
+                    val = eval('old_issue.fields.' + issue_details_old[old_issuetype][new_field]['id'])
                     return val
                 return value
         for o_field in old_field:
@@ -3212,6 +3281,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     # System fields
     for n_field, n_values in issue_details_new[issuetype].items():
         if issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team']:
+            continue
+        if n_field not in issue_details_old[old_issuetype].keys():
             continue
         if (n_values['custom type'] is None and n_field not in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent']) or (n_field in jira_system_fields):
             data_val[n_values['id']] = get_old_system_field(n_field)
@@ -3413,24 +3484,24 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     # Post-processing fix for Parent Links (which is not part of migration)
     try:
-        if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys():
-            parent_found = 0
+        if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and data_val[issue_details_new[issuetype]['Parent Link']['id']] is not None:
             for k, v in items_lst.items():
                 if data_val[issue_details_new[issuetype]['Parent Link']['id']] in v:
-                    parent_found = 1
                     break
             try:
                 parent_issue = jira_old.issue(data_val[issue_details_new[issuetype]['Parent Link']['id']])
-                parent_found = 1
+                existent_parent = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
+                if parent_issue.key == existent_parent:
+                    data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+                elif data_val[issue_details_new[issuetype]['Parent Link']['id']] != existent_parent and existent_parent is not None:
+                    if json_importer_flag == 1:
+                        new_key = new_issue.key
+                        delete_issue(new_key)
+                        return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
+                    else:
+                        data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
             except:
-                parent_found = 0
-            try:
-                parent_link = eval('old_issue.fields.' + issue_details_old[old_issuetype]['Parent Link']['id'])
-                if parent_link == data_val[issue_details_new[issuetype]['Parent Link']['id']] or eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id']) is not None:
-                    parent_found = 0
-            except:
-                pass
-            if parent_found == 0:
+                print("[WARNING] Parent Link for '{}' can't be found.".format(new_issue.key))
                 data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
     except:
         pass
@@ -3551,6 +3622,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         except:
             print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
             print("[INFO] The details for update: '{}'".format(data_val))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
 
 
 def check_target_project():
@@ -3580,7 +3653,7 @@ def generate_template():
     """Function for Excel Mapping Template Generation - saving user configuration and processing data"""
     global jira_old, jira_new, auth, username, password, project_old, project_new, mapping_file, JIRA_BASE_URL_NEW
     global JIRA_BASE_URL_OLD, issue_details_old, issue_details_new, migrate_statuses_check, threads, verify
-    global json_importer_flag
+    global json_importer_flag, verbose_logging
     
     username = user.get()
     password = passwd.get()
@@ -3619,6 +3692,8 @@ def generate_template():
         issue_details_new = get_fields_list_by_project(jira_new, project_new)
     except Exception as e:
         print("[ERROR] Issue Details can't be processed due to '{}'.".format(e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         os.system("pause")
         exit()
     
@@ -3954,6 +4029,7 @@ def main_program():
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
+        global verbose_logging
         
         if key in already_processed_json_importer_issues:
             return (0, key)
@@ -3993,6 +4069,8 @@ def main_program():
                 return (0, key)
         except Exception as e:
             print("[ERROR] Exception: '{}'.".format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
             return (1, key)
     
     def get_new_board_id():
@@ -4076,6 +4154,8 @@ def main_program():
         issue_details_new = get_fields_list_by_project(jira_new, project_new)
     except Exception as e:
         print("[ERROR] Issue Details can't be processed due to '{}'.".format(e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         os.system("pause")
         exit()
     
@@ -4302,7 +4382,7 @@ def main_program():
         print('[INFO] The list of migrated issues by type:', str(items_lst))
     
     # Creating missing Dummy issues
-    if json_importer_flag == 0 and multiple_json_data_processing == 0:
+    if json_importer_flag == 0 and multiple_json_data_processing == 0 and migrate_metadata_check == 1:
         start_dummy_time = time.time()
         jql_max_new = 'project = {} order by key desc'.format(project_new)
         try:
@@ -4430,7 +4510,7 @@ def main_program():
         print("")
     
     # Delete issues with Summary = 'Dummy Issue'
-    if json_importer_flag == 0 and multiple_json_data_processing == 0:
+    if json_importer_flag == 0 and multiple_json_data_processing == 0 and migrate_metadata_check == 1:
         start_delete_time = time.time()
         delete_extra_issues(max_id)
         print("[INFO] Dummy issues have been deleted/skipped in '{}' seconds.".format(time.time() - start_delete_time))
