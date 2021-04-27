@@ -125,7 +125,7 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 temp_dir_name = 'Attachments_Temp/'
 log_file = './MIGRATION_TOOL_OUT.txt'
 mapping_file = ''
-jira_system_fields = ['Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end']
+jira_system_fields = ['Summary', 'Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end']
 additional_mapping_fields = ['Description', 'Labels', 'Due Date', 'Target start', 'Target end']
 limit_migration_data = 0  # 0 if all
 save_validation_details = 0 # to save validation details in the .json file
@@ -182,6 +182,7 @@ json_file_part_num = 1
 failed_issues = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
+non_migrated_set = set()
 skipped_issuetypes = []
 total_processed = 0
 max_json_file_size = 10
@@ -635,11 +636,6 @@ def get_new_issuetype(old_issuetype):
             return issuetype
 
 
-def get_old_issuetype(new_issuetype):
-    global issuetypes_mappings
-    return issuetypes_mappings[new_issuetype]['issuetypes'][0]
-
-
 def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_migrated=False, max_result=limit_migration_data):
     """This function returns list of JIRA keys for provided list of JIRA JQL queries"""
     global items_lst, limit_migration_data, verbose_logging, max_retries, default_max_retries, already_migrated_set
@@ -647,6 +643,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
     
     def sprint_update(param):
         global items_lst, old_sprints, issue_details_old, skip_migrated_flag, already_migrated_set, JIRA_board_api, headers
+        global non_migrated_set
         
         jira, non_migrated, jql, start_idx, max_res = param
         sprint_field_id = issue_details_old['Story']['Sprint']['id']
@@ -680,7 +677,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
                                     pass
                         if name not in old_sprints.keys():
                             old_sprints[name] = {"id": sprint_id, "startDate": start_date, "endDate": end_date, "state": state.upper(), "originBoardName": board_name}
-                if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set:
+                if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set and get_shifted_key(issue.key.replace(project_new, project_old)) not in non_migrated_set:
                     continue
                 if issue.fields.issuetype.name not in items_lst.keys():
                     items_lst[issue.fields.issuetype.name] = set()
@@ -692,7 +689,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
             return (1, param)
     
     def issue_list_update(param):
-        global items_lst, skip_migrated_flag, already_migrated_set
+        global items_lst, skip_migrated_flag, already_migrated_set, non_migrated_set
         
         jira, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields='issuetype')
@@ -700,16 +697,13 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
         try:
             for issue in issues:
                 if non_migrated is False:
-                    if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set:
+                    if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set and get_shifted_key(issue.key.replace(project_new, project_old)) not in non_migrated_set:
                         continue
                     if issue.fields.issuetype.name not in items_lst.keys():
                         items_lst[issue.fields.issuetype.name] = set()
                     items_lst[issue.fields.issuetype.name].add(issue.key)
                 else:
-                    old_issue_type = get_old_issuetype(issue.fields.issuetype.name)
-                    if old_issue_type not in items_lst.keys():
-                        items_lst[old_issue_type] = set()
-                    items_lst[old_issue_type].add(get_shifted_key(issue.key, reversed=True))
+                    non_migrated_set.add(get_shifted_key(issue.key, reversed=True))
             return (0, param)
         except:
             return (1, param)
@@ -730,13 +724,13 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
             return (1, param)
     
     def issue_list_upload(param):
-        global issues_lst, skip_migrated_flag, already_migrated_set
+        global issues_lst, skip_migrated_flag, already_migrated_set, non_migrated_set
         
         jira, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
         try:
             for issue in issues:
-                if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set:
+                if skip_migrated_flag == 1 and get_shifted_key(issue.key.replace(project_new, project_old)) in already_migrated_set and get_shifted_key(issue.key.replace(project_new, project_old)) not in non_migrated_set:
                     continue
                 issues_lst.add(issue.key)
             return (0, param)
@@ -2543,12 +2537,24 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
             return (old_status_id, old_status_name)
     
     def get_watchers(jira, key):
+        global already_processed_users, users_set, users
+        
+        user = {}
         watchers = []
         try:
             watcher = jira.watchers(key)
             if watcher.watchers != []:
                 for w in watcher.watchers:
-                    watchers.append(w.name)
+                    user_name = w.name
+                    watchers.append(user_name)
+                    if user_name not in users_set and user_name not in already_processed_users:
+                        user["name"] = user_name
+                        user["fullname"] = w.displayName
+                        user["email"] = w.emailAddress
+                        user["active"] = w.active
+                        user["groups"] = ["jira-users"]
+                        users_set.add(user_name)
+                        users.append(user)
         except:
             pass
         return watchers
@@ -2807,7 +2813,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         project_issue["created"] = old_issue.fields.created
         project_issue["history"] = histories
         project_issue["worklogs"] = worklogs
-        project_issue["summary"] = old_issue.fields.summary
+        project_issue["summary"] = old_issue.fields.summary.replace('\n', ' ').replace('\t', ' ')
         project_issue["updated"] = old_issue.fields.updated
         project_issue["watchers"] = get_watchers(jira_old, old_issue.key)
     project_issue["labels"] = ['MIGRATION_NOT_COMPLETE']
@@ -2956,6 +2962,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         return None
                     else:
                         value = get_shifted_key(value.replace(project_old, project_new))
+                elif new_field in ['Summary']:
+                    value = value.replace('\n', ' ').replace('\t', ' ')
                 return value
     
     def get_old_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype, data_val={}):
@@ -3040,7 +3048,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         old_value = None
                         return old_value
                 else:
-                    old_value = value_value + ' --> ' + value_child
+                    if value_value is not None and value_child is not None:
+                        old_value = value_value + ' --> ' + value_child
+                    elif value_child is not None:
+                        old_value = value_value
+                    else:
+                        old_value = value_child
             elif issue_details_old[old_issuetype][field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
                 value = get_team_name(value)
             old_value = value
@@ -3167,9 +3180,11 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 concatenated_value += 0 if get_value(o_field) is None else get_value(o_field)
             elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
                 if concatenated_value is None:
-                    if new_field != 'Labels' or (new_field == 'Labels' and data_val['labels'] is None):
+                    if new_field != 'Labels' or (new_field == 'Labels' and 'labels' in data_val.keys() and data_val['labels'] is None):
                         concatenated_value = []
                     else:
+                        if 'labels' not in data_val.keys():
+                            data_val['labels'] = []
                         concatenated_value = data_val['labels']
                 if issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
                     if processed is True:
@@ -3284,7 +3299,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             continue
         if n_field not in issue_details_old[old_issuetype].keys():
             continue
-        if (n_values['custom type'] is None and n_field not in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent']) or (n_field in jira_system_fields):
+        if (n_values['custom type'] is None and n_field not in ['Issue Type', 'Project', 'Linked Issues', 'Attachment', 'Parent']) or (n_field in jira_system_fields):
             data_val[n_values['id']] = get_old_system_field(n_field)
     
     # Custom fields
@@ -3429,24 +3444,28 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     # Post-processing for Assignee, if issue was converted from Sub-Task
     new_assignee = None
+    new_assignee_key = None
     old_assignee = None
+    old_assignee_key = None
     if new_issue.fields.assignee is not None and jira_new.search_users(new_issue.fields.assignee.name) != []:
         new_assignee = new_issue.fields.assignee.name
+        new_assignee_key = new_issue.fields.assignee.key
     if old_issue.fields.assignee is not None:
         old_assignee = old_issue.fields.assignee.name
-    if new_assignee != old_assignee and old_assignee is not None and jira_new.search_users(old_issue.fields.assignee.name):
+        old_assignee_key = old_issue.fields.assignee.key
+    if (new_assignee != old_assignee or new_assignee_key != old_assignee_key) and old_assignee is not None and jira_new.search_users(old_issue.fields.assignee.name):
         data_val['assignee'] = {"name": old_issue.fields.assignee.name}
     elif new_assignee != old_assignee and old_assignee is None:
         data_val['assignee'] = None
     
     # Post-processing for Reporter and Creator for JSON importer case
     try:
-        if new_issue.fields.assignee.name == old_issue.fields.assignee.name:
+        if new_issue.fields.assignee.name == old_issue.fields.assignee.name or new_issue.fields.assignee.key == old_issue.fields.assignee.key:
             data_val.pop('assignee', None)
     except:
         pass
     try:
-        if new_issue.fields.reporter.name == old_issue.fields.reporter.name:
+        if new_issue.fields.reporter.name == old_issue.fields.reporter.name or new_issue.fields.reporter.key == old_issue.fields.reporter.key:
             data_val.pop('reporter', None)
     except:
         pass
@@ -3462,7 +3481,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             pass
     
     # Post-processing fix for Components, versions
-    if data_val['components'] is None:
+    if 'components' in data_val.keys() and data_val['components'] is None:
         data_val['components'] = []
     
     # Post-processing for OLD Components / Versions with spaces in the very beginning
@@ -3484,22 +3503,30 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     # Post-processing fix for Parent Links (which is not part of migration)
     try:
-        if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and data_val[issue_details_new[issuetype]['Parent Link']['id']] is not None:
+        parent_to_be_added = 0
+        parent_link_id_to_add = data_val[issue_details_new[issuetype]['Parent Link']['id']]
+        if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and parent_link_id_to_add is not None:
             for k, v in items_lst.items():
-                if data_val[issue_details_new[issuetype]['Parent Link']['id']] in v:
+                if parent_link_id_to_add in v:
+                    parent_to_be_added = 1
                     break
             try:
-                parent_issue = jira_old.issue(data_val[issue_details_new[issuetype]['Parent Link']['id']])
+                parent_issue = jira_old.issue(get_shifted_key(parent_link_id_to_add, reversed=True))
                 existent_parent = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
                 if parent_issue.key == existent_parent:
                     data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
-                elif data_val[issue_details_new[issuetype]['Parent Link']['id']] != existent_parent and existent_parent is not None:
+                elif parent_link_id_to_add != existent_parent and existent_parent is not None:
                     if json_importer_flag == 1:
                         new_key = new_issue.key
                         delete_issue(new_key)
                         return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
                     else:
                         data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+                elif parent_link_id_to_add is not None and existent_parent is None and parent_to_be_added == 1:
+                    process_issue(parent_link_id_to_add, reprocess=True)
+                elif parent_link_id_to_add is not None and existent_parent is None and parent_to_be_added == 0:
+                    print("[WARNING] Parent '{}' is not part of migration for '{}'. Dropped.".format(parent_link_id_to_add, new_issue.key))
+                    data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
             except:
                 print("[WARNING] Parent Link for '{}' can't be found.".format(new_issue.key))
                 data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
