@@ -31,7 +31,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.2'
+current_version = '3.3'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -54,8 +54,11 @@ JIRA_team_api = '/rest/teams-api/1.0/team'
 JIRA_board_api = '/rest/agile/1.0/board/'
 JIRA_status_api = '/rest/api/2/status'
 JIRA_attachment_api = '/rest/api/2/attachment/'
+JIRA_users_api = '/rest/api/2/user?username={}'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 JIRA_labelit_api = '/rest/labelit/1.0/items'
+JIRA_workflowscheme_api = '/rest/projectconfig/1/workflowscheme/{}'
+JIRA_workflow_api = '/rest/projectconfig/1/workflow?workflowName={}&projectKey={}'
 JIRA_create_project_api = '/rest/scriptrunner/latest/custom/createProject'
 JIRA_get_permissions_scheme_api = '/rest/api/2/permissionscheme'
 JIRA_assign_permission_scheme_api = '/rest/api/2/project/{}/permissionscheme'
@@ -175,6 +178,8 @@ json_importer_flag = 1
 including_users_flag = 1
 process_only_last_updated_date_flag = 0
 replace_complete_statuses_flag = 1
+check_template_flag = 1
+skip_existing_issuetypes_validation_flag = 0
 
 # Required for creation JSON file - total_data have to be dumped in JSON file for processing from UI.
 multiple_json_data_processing = 0
@@ -306,7 +311,7 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                             if d[2] == '' and verbose_logging == 1:
                                 print("[WARNING] The mapping of '{}' field for '{}' Issuetype not found. Field values will be dropped.".format(d[1], d[0]))
                     else:
-                        if len(d) <= 2:
+                        if len(d) <= 2 or excel_sheet_name == 'Priority':
                             try:
                                 if mapping_type == 0:
                                     value_mappings[d[0]] = d[1].split(',')
@@ -353,15 +358,15 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
 
 def get_transitions(project, jira_url, new=False):
     global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify, verbose_logging
-    global replace_complete_statuses_flag
+    global replace_complete_statuses_flag, JIRA_workflow_api
     
     print("[START] Retrieving Transitions and Statuses for {} '{}' project from JIRA.".format('Target' if new is True else 'Source', project))
     
     statuses_lst = []
     
     def get_workflows(project, jira_url, new):
-        global sub_tasks, auth, old_sub_tasks, new_issues_ids
-        url = jira_url + '/rest/projectconfig/1/workflowscheme/' + project
+        global sub_tasks, auth, old_sub_tasks, new_issues_ids, JIRA_workflowscheme_api
+        url = jira_url + JIRA_workflowscheme_api.format(project)
         r = requests.get(url, auth=auth, headers=headers, verify=verify)
         workflow_schema_string = r.content.decode('utf-8')
         workflow_schema_details = json.loads(workflow_schema_string)
@@ -383,8 +388,8 @@ def get_transitions(project, jira_url, new=False):
         transitions = {}
         for workflow_name, workflow_details in get_workflows(project, jira_url, new).items():
             for issuetype in workflow_details:
-                url0 = jira_url + '//rest/projectconfig/1/workflow?workflowName=' + urllib.parse.quote_plus(workflow_name) + '&projectKey=' + project
-                url1 = jira_url + '/rest/projectconfig/1/workflow?workflowName=' + urllib.parse.quote_plus(workflow_name) + '&projectKey=' + project
+                url0 = jira_url + '/' + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
+                url1 = jira_url + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
                 r = requests.get(url0, auth=auth, headers=headers, verify=verify)
                 if r.status_code == 200:
                     workflow_string = r.content.decode('utf-8')
@@ -2879,6 +2884,25 @@ def get_correct_versions(versions):
     return new_versions_detail
 
 
+def check_user(user_name):
+    global JIRA_BASE_URL_NEW, JIRA_users_api, auth, headers, verify
+    
+    if user_name is None:
+        return False
+    
+    try:
+        url = JIRA_BASE_URL_NEW + JIRA_users_api.format(user_name)
+        r = requests.get(url, auth=auth, headers=headers, verify=verify)
+        users_string = r.content.decode('utf-8')
+        user_details = json.loads(users_string)
+        if 'errorMessages' in user_details:
+            return False
+        else:
+            return True
+    except:
+        return False
+
+
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
@@ -2936,7 +2960,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             cont_value = []
             for v in value:
                 if hasattr(v, 'name'):
-                    if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(v) != [])
+                    if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and check_user(v))
                         or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
@@ -2946,7 +2970,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             return cont_value
         else:
             if hasattr(value, 'name'):
-                if issue_details_old[old_issuetype][new_field]['type'] == 'user' and jira_new.search_users(value) == []:
+                if issue_details_old[old_issuetype][new_field]['type'] == 'user' and not check_user(value):
                     return None
                 elif new_field == 'Priority' and get_new_value_from_mapping(value.name, new_field) == '':
                     return {"name": issue_details_new[issuetype]['Priority']['default value']}
@@ -2955,7 +2979,15 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             elif hasattr(value, 'value'):
                 return {"value": get_new_value_from_mapping(value.value, new_field)}
             else:
-                if value is None and issue_details_old[old_issuetype][new_field]['type'] == 'string':
+                if issue_details_new[issuetype][new_field]['type'] == 'array':
+                    if value is None:
+                        value = []
+                    else:
+                        try:
+                            value = value.split(',')
+                        except:
+                            value = [value.replace(' ', '_').replace('\n', '_').replace('\t', '_')]
+                elif value is None and issue_details_new[issuetype][new_field]['type'] == 'string':
                     value = ''
                 elif new_field in ['Epic Link', 'Parent Link']:
                     if value is None:
@@ -3302,6 +3334,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         if (n_values['custom type'] is None and n_field not in ['Issue Type', 'Project', 'Linked Issues', 'Attachment', 'Parent']) or (n_field in jira_system_fields):
             data_val[n_values['id']] = get_old_system_field(n_field)
     
+    # Non-linked Custom fields - clear them out
+    for new_field in issue_details_new[issuetype].keys():
+        if new_field not in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] and new_field not in jira_system_fields and new_field not in fields_mappings[old_issuetype].keys():
+            if issue_details_new[issuetype][new_field]['type'] in ['string']:
+                data_value = ''
+            elif issue_details_new[issuetype][new_field]['type'] in ['user', 'array']:
+                data_value = []
+            else:
+                data_value = None
+            data_val[issue_details_new[issuetype][new_field]['id']] = data_value
+
     # Custom fields
     if old_issuetype in fields_mappings.keys():
         for n_field in fields_mappings[old_issuetype].keys():
@@ -3342,7 +3385,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                 data_value.append({"name": None})
                     else:
                         try:
-                            if jira_new.search_users(n_field_value.name) == []:
+                            if not check_user(n_field_value.name):
                                 n_field_value = ''
                                 print("[WARNING] No '{}' User found on Target JIRA instance.".format(n_field_value.name))
                         except:
@@ -3447,25 +3490,33 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     new_assignee_key = None
     old_assignee = None
     old_assignee_key = None
-    if new_issue.fields.assignee is not None and jira_new.search_users(new_issue.fields.assignee.name) != []:
+    if new_issue.fields.assignee is not None and check_user(new_issue.fields.assignee.name):
         new_assignee = new_issue.fields.assignee.name
         new_assignee_key = new_issue.fields.assignee.key
     if old_issue.fields.assignee is not None:
         old_assignee = old_issue.fields.assignee.name
         old_assignee_key = old_issue.fields.assignee.key
-    if (new_assignee != old_assignee or new_assignee_key != old_assignee_key) and old_assignee is not None and jira_new.search_users(old_issue.fields.assignee.name):
+    if (new_assignee != old_assignee or new_assignee_key != old_assignee_key) and old_assignee is not None and check_user(old_issue.fields.assignee.name):
         data_val['assignee'] = {"name": old_issue.fields.assignee.name}
     elif new_assignee != old_assignee and old_assignee is None:
         data_val['assignee'] = None
     
     # Post-processing for Reporter and Creator for JSON importer case
     try:
-        if new_issue.fields.assignee.name == old_issue.fields.assignee.name or new_issue.fields.assignee.key == old_issue.fields.assignee.key:
+        new_assignee_name = None if new_issue.fields.assignee is None else new_issue.fields.assignee.name
+        new_assignee_key = None if new_issue.fields.assignee is None else new_issue.fields.assignee.key
+        old_assignee_name = None if old_issue.fields.assignee is None else old_issue.fields.assignee.name
+        old_assignee_key = None if old_issue.fields.assignee is None else old_issue.fields.assignee.key
+        if not check_user(old_assignee_name) or new_assignee_name == old_assignee_name or new_assignee_key == old_assignee_key:
             data_val.pop('assignee', None)
     except:
         pass
     try:
-        if new_issue.fields.reporter.name == old_issue.fields.reporter.name or new_issue.fields.reporter.key == old_issue.fields.reporter.key:
+        new_reporter_name = None if new_issue.fields.reporter is None else new_issue.fields.reporter.name
+        new_reporter_key = None if new_issue.fields.reporter is None else new_issue.fields.reporter.key
+        old_reporter_name = None if old_issue.fields.reporter is None else old_issue.fields.reporter.name
+        old_reporter_key = None if old_issue.fields.reporter is None else old_issue.fields.reporter.key
+        if not check_user(old_reporter_name) or new_reporter_name == old_reporter_name or new_reporter_key == old_reporter_key:
             data_val.pop('reporter', None)
     except:
         pass
@@ -3522,7 +3573,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         return process_issue(old_issue.key.replace(project_old, project_new), reprocess=True)
                     else:
                         data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
-                elif parent_link_id_to_add is not None and existent_parent is None and parent_to_be_added == 1:
+                elif parent_link_id_to_add is not None and existent_parent is None and json_importer_flag == 1 and (parent_to_be_added == 1 or including_dependencies_flag == 1):
                     process_issue(parent_link_id_to_add, reprocess=True)
                 elif parent_link_id_to_add is not None and existent_parent is None and parent_to_be_added == 0:
                     print("[WARNING] Parent '{}' is not part of migration for '{}'. Dropped.".format(parent_link_id_to_add, new_issue.key))
@@ -3600,57 +3651,59 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     try:
         new_issue.update(notify=False, fields=data_val)
-    except Exception as e:
+    except Exception as er:
         try:
-            if "epic.error.not.found" in e.text:
+            if "epic.error.not.found" in er.text:
                 data_val.pop(issue_details_new[issuetype]['Epic Link']['id'], None)
-                new_issue.update(notify=False, fields=data_val)
-            elif "User" in e.text and 'does not exist' in e.text:
-                user_name = e.text.split('\'')[1]
-                if "assignee" in data_val.keys() and data_val['assignee'] is not None and data_val['assignee']['name'] == user_name:
-                    data_val.pop('assignee', None)
-                if "reporter" in data_val.keys() and data_val['reporter'] is not None and data_val['reporter']['name'] == user_name:
+            new_issue.update(notify=False, fields=data_val)
+        except Exception as e:
+            try:
+                if "User" in e.text and 'does not exist' in e.text:
+                    user_name = e.text.split('\'')[1]
+                    if "assignee" in data_val.keys() and data_val['assignee'] is not None and data_val['assignee']['name'] == user_name:
+                        data_val.pop('assignee', None)
+                    if "reporter" in data_val.keys() and data_val['reporter'] is not None and data_val['reporter']['name'] == user_name:
+                        data_val.pop('reporter', None)
+                    new_issue.update(notify=False, fields=data_val)
+                elif "The reporter specified is not a user" in e.text:
                     data_val.pop('reporter', None)
-                new_issue.update(notify=False, fields=data_val)
-            elif "The reporter specified is not a user" in e.text:
-                data_val.pop('reporter', None)
-                new_issue.update(notify=False, fields=data_val)
-            elif "cannot be assigned issues" in e.text:
-                data_val.pop('assignee', None)
-                new_issue.update(notify=False, fields=data_val)
-            elif "does not exist for the field 'project'." in e.text:
-                try:
-                    new_issue = jira_new.issue(new_issue.key)
                     new_issue.update(notify=False, fields=data_val)
-                except Exception as er:
-                    print("[ERROR] Session was killed by JIRA. Exception: '{}'".format(er.text))
-            elif "You do not have permission to edit issue" in e.text:
-                try:
-                    data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+                elif "cannot be assigned issues" in e.text:
+                    data_val.pop('assignee', None)
                     new_issue.update(notify=False, fields=data_val)
-                except:
-                    data_val.pop(issue_details_new[issuetype]['Epic Link']['id'], None)
-                    new_issue.update(notify=False, fields=data_val)
-            elif "Component name" in e.text and "is not valid" in e.text:
-                try:
-                    missing_component = e.text.replace("Component name '", "").replace("' is not valid", "")
-                    new_components = []
-                    for component in data_val["components"]:
-                        if component['name'] not in missing_component:
-                            new_components.append({"name": component['name']})
-                    data_val["components"] = new_components
-                    new_issue.update(notify=False, fields=data_val)
-                except:
-                    data_val.pop('components', None)
-                    new_issue.update(notify=False, fields=data_val)
-            else:
+                elif "does not exist for the field 'project'." in e.text:
+                    try:
+                        new_issue = jira_new.issue(new_issue.key)
+                        new_issue.update(notify=False, fields=data_val)
+                    except Exception as er:
+                        print("[ERROR] Session was killed by JIRA. Exception: '{}'".format(er.text))
+                elif "You do not have permission to edit issue" in e.text:
+                    try:
+                        data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
+                        new_issue.update(notify=False, fields=data_val)
+                    except:
+                        data_val.pop(issue_details_new[issuetype]['Epic Link']['id'], None)
+                        new_issue.update(notify=False, fields=data_val)
+                elif "Component name" in e.text and "is not valid" in e.text:
+                    try:
+                        missing_component = e.text.replace("Component name '", "").replace("' is not valid", "")
+                        new_components = []
+                        for component in data_val["components"]:
+                            if component['name'] not in missing_component:
+                                new_components.append({"name": component['name']})
+                        data_val["components"] = new_components
+                        new_issue.update(notify=False, fields=data_val)
+                    except:
+                        data_val.pop('components', None)
+                        new_issue.update(notify=False, fields=data_val)
+                else:
+                    print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
+                    print("[INFO] The details for update: '{}'".format(data_val))
+            except:
                 print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
                 print("[INFO] The details for update: '{}'".format(data_val))
-        except:
-            print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
-            print("[INFO] The details for update: '{}'".format(data_val))
-            if verbose_logging == 1:
-                print(traceback.format_exc())
+                if verbose_logging == 1:
+                    print(traceback.format_exc())
 
 
 def check_target_project():
@@ -3788,7 +3841,7 @@ def check_global_admin_rights():
 
 def validate_template():
     global issue_details_new, issuetypes_mappings, fields_mappings, status_mappings, new_transitions, save_validation_details
-    global issue_details_old, old_transitions
+    global issue_details_old, old_transitions, jira_old, project_old, skip_existing_issuetypes_validation_flag
     
     def try_to_validate(field, field_lst):
         for avail_field in field_lst:
@@ -3810,7 +3863,20 @@ def validate_template():
     template_error = 0
     error_processed = 0
     
-    # Checking Target issuetype mappings
+    old_issuetypes_totals = {}
+    for issuetype, old_issuetypes in issuetypes_mappings.items():
+        for old_issuetype in old_issuetypes['issuetypes']:
+            if skip_existing_issuetypes_validation_flag == 1:
+                try:
+                    jql = "project = {} AND issuetype = {}".format(project_old, old_issuetype)
+                    total = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
+                except:
+                    total = 0
+            else:
+                total = 1
+            old_issuetypes_totals[old_issuetype] = total
+
+# Checking Target issuetype mappings
     for issuetype, old_issuetypes in issuetypes_mappings.items():
         if issuetype != '':
             type_not_found = 1
@@ -3826,20 +3892,21 @@ def validate_template():
     # Checking Source Issue Types
     for issuetype, old_issuetypes in issuetypes_mappings.items():
         for old_issuetype in old_issuetypes['issuetypes']:
-            type_not_found = 1
-            for o_type in issue_details_old.keys():
-                if o_type == old_issuetype:
-                    type_not_found = 0
-                    break
-            if type_not_found == 1 and issuetype != '':
-                print("[ERROR] Issuetype '{}' is not available in Source project. Mapped to '{}'".format(old_issuetype, issuetype))
-                proposed_value = try_to_validate(old_issuetype, list(issue_details_old.keys()))
-                if proposed_value is None:
-                    print("[INFO] Available issuetypes are: '{}'".format(issue_details_old.keys()))
-                else:
-                    print("[PROPOSED CHANGE] Issuetype '{}' could be renamed to '{}'".format(old_issuetype, proposed_value))
-                template_error = 1
-                error_processed = 1
+            if old_issuetypes_totals[old_issuetype] > 0:
+                type_not_found = 1
+                for o_type in issue_details_old.keys():
+                    if o_type == old_issuetype:
+                        type_not_found = 0
+                        break
+                if type_not_found == 1 and issuetype != '':
+                    print("[ERROR] Issuetype '{}' is not available in Source project. Mapped to '{}'".format(old_issuetype, issuetype))
+                    proposed_value = try_to_validate(old_issuetype, list(issue_details_old.keys()))
+                    if proposed_value is None:
+                        print("[INFO] Available issuetypes are: '{}'".format(issue_details_old.keys()))
+                    else:
+                        print("[PROPOSED CHANGE] Issuetype '{}' could be renamed to '{}'".format(old_issuetype, proposed_value))
+                    template_error = 1
+                    error_processed = 1
     
     if template_error == 1 and error_processed == 1:
         print("")
@@ -3848,52 +3915,54 @@ def validate_template():
     # Checking Target field mappings
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
-            try:
-                for new_field, old_fields in fields_mappings[old_issuetype].items():
-                    if new_field != '':
-                        field_not_found = 1
-                        try:
-                            for field in issue_details_new[issuetype].keys():
-                                if new_field == field:
-                                    field_not_found = 0
-                                    break
-                        except:
-                            field_not_found = 1
-                        if field_not_found == 1:
-                            print("[ERROR] Target Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source fields: '{}'".format(new_field, old_issuetype, issuetype, old_fields))
-                            template_error = 1
-                            error_processed = 1
-            except:
-                if issuetype != '':
-                    print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
-    
-    # Checking Source field mappings
-    for issuetype, values in issuetypes_mappings.items():
-        for old_issuetype in values['issuetypes']:
-            try:
-                for new_field, old_fields in fields_mappings[old_issuetype].items():
-                    if new_field != '':
-                        for old_field in old_fields:
+            if old_issuetypes_totals[old_issuetype] > 0:
+                try:
+                    for new_field, old_fields in fields_mappings[old_issuetype].items():
+                        if new_field != '':
                             field_not_found = 1
                             try:
-                                for o_field in issue_details_old[old_issuetype].keys():
-                                    if old_field == o_field or 'issuetype.name' in old_field or 'issuetype.status' in old_field:
+                                for field in issue_details_new[issuetype].keys():
+                                    if new_field == field:
                                         field_not_found = 0
                                         break
                             except:
                                 field_not_found = 1
-                            if field_not_found == 1 and issuetype != '':
-                                proposed_value = try_to_validate(old_field, list(issue_details_old[old_issuetype].keys()))
-                                print("[ERROR] Source Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target fields: '{}'".format(old_field, old_issuetype, issuetype, new_field))
-                                if proposed_value is None:
-                                    print("[INFO] Available Fields are: '{}'".format(list(issue_details_old[old_issuetype].keys())))
-                                else:
-                                    print("[PROPOSED CHANGE] Source Field '{}' could be renamed to '{}'".format(old_field, proposed_value))
+                            if field_not_found == 1:
+                                print("[ERROR] Target Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source fields: '{}'".format(new_field, old_issuetype, issuetype, old_fields))
                                 template_error = 1
                                 error_processed = 1
-            except:
-                if issuetype != '':
-                    print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+                except:
+                    if issuetype != '':
+                        print("[WARNING] Please check the '{}' Source Issuetype value. Looks like name incorrect. It would be skipped.".format(old_issuetype))
+    
+    # Checking Source field mappings
+    for issuetype, values in issuetypes_mappings.items():
+        for old_issuetype in values['issuetypes']:
+            if old_issuetypes_totals[old_issuetype] > 0:
+                try:
+                    for new_field, old_fields in fields_mappings[old_issuetype].items():
+                        if new_field != '':
+                            for old_field in old_fields:
+                                field_not_found = 1
+                                try:
+                                    for o_field in issue_details_old[old_issuetype].keys():
+                                        if old_field == o_field or 'issuetype.name' in old_field or 'issuetype.status' in old_field:
+                                            field_not_found = 0
+                                            break
+                                except:
+                                    field_not_found = 1
+                                if field_not_found == 1 and issuetype != '':
+                                    proposed_value = try_to_validate(old_field, list(issue_details_old[old_issuetype].keys()))
+                                    print("[ERROR] Source Field '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target fields: '{}'".format(old_field, old_issuetype, issuetype, new_field))
+                                    if proposed_value is None:
+                                        print("[INFO] Available Fields are: '{}'".format(list(issue_details_old[old_issuetype].keys())))
+                                    else:
+                                        print("[PROPOSED CHANGE] Source Field '{}' could be renamed to '{}'".format(old_field, proposed_value))
+                                    template_error = 1
+                                    error_processed = 1
+                except:
+                    if issuetype != '':
+                        print("[WARNING] Please check the '{}' Source Issuetype value. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
     
     if template_error == 1 and error_processed == 1:
         print("")
@@ -3909,23 +3978,24 @@ def validate_template():
     
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
-            try:
-                for n_status, old_statuses in status_mappings[old_issuetype].items():
-                    if n_status != '':
-                        status_not_found = 1
-                        try:
-                            for new_status in new_issuetype_statuses[issuetype]:
-                                if new_status.upper() == n_status.upper():
-                                    status_not_found = 0
-                                    break
-                            if status_not_found == 1:
-                                print("[ERROR] Target Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source statuses: '{}'".format(n_status, old_issuetype, issuetype, old_statuses))
-                                template_error = 1
-                        except:
-                            pass
-            except:
-                if issuetype != '':
-                    print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+            if old_issuetypes_totals[old_issuetype] > 0:
+                try:
+                    for n_status, old_statuses in status_mappings[old_issuetype].items():
+                        if n_status != '':
+                            status_not_found = 1
+                            try:
+                                for new_status in new_issuetype_statuses[issuetype]:
+                                    if new_status.upper() == n_status.upper():
+                                        status_not_found = 0
+                                        break
+                                if status_not_found == 1:
+                                    print("[ERROR] Target Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source statuses: '{}'".format(n_status, old_issuetype, issuetype, old_statuses))
+                                    template_error = 1
+                            except:
+                                pass
+                except:
+                    if issuetype != '':
+                        print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
     
     # Checking Source statuses mappings
     old_issuetype_statuses = {}
@@ -3938,29 +4008,30 @@ def validate_template():
     
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
-            try:
-                for n_status, old_statuses in status_mappings[old_issuetype].items():
-                    if n_status != '':
-                        for old_status in old_statuses:
-                            status_not_found = 1
-                            try:
-                                for o_status in old_issuetype_statuses[old_issuetype]:
-                                    if old_status.upper() == o_status.upper():
-                                        status_not_found = 0
-                                        break
-                                if status_not_found == 1 and issuetype != '':
-                                    proposed_value = try_to_validate(old_status, list(old_issuetype_statuses[old_issuetype]))
-                                    print("[ERROR] Source Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target statuses: '{}'".format(old_status, old_issuetype, issuetype, n_status))
-                                    if proposed_value is None:
-                                        print("[INFO] Available Statuses are: '{}'".format(list(old_issuetype_statuses[old_issuetype])))
-                                    else:
-                                        print("[PROPOSED CHANGE] Status '{}' could be renamed to '{}'".format(old_status, proposed_value))
-                                    template_error = 1
-                            except:
-                                pass
-            except:
-                if issuetype != '':
-                    print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
+            if old_issuetypes_totals[old_issuetype] > 0:
+                try:
+                    for n_status, old_statuses in status_mappings[old_issuetype].items():
+                        if n_status != '':
+                            for old_status in old_statuses:
+                                status_not_found = 1
+                                try:
+                                    for o_status in old_issuetype_statuses[old_issuetype]:
+                                        if old_status.upper() == o_status.upper():
+                                            status_not_found = 0
+                                            break
+                                    if status_not_found == 1 and issuetype != '':
+                                        proposed_value = try_to_validate(old_status, list(old_issuetype_statuses[old_issuetype]))
+                                        print("[ERROR] Source Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Target statuses: '{}'".format(old_status, old_issuetype, issuetype, n_status))
+                                        if proposed_value is None:
+                                            print("[INFO] Available Statuses are: '{}'".format(list(old_issuetype_statuses[old_issuetype])))
+                                        else:
+                                            print("[PROPOSED CHANGE] Status '{}' could be renamed to '{}'".format(old_status, proposed_value))
+                                        template_error = 1
+                                except:
+                                    pass
+                except:
+                    if issuetype != '':
+                        print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
     
     if template_error == 1:
         print("")
@@ -4052,7 +4123,7 @@ def main_program():
     global max_retries, total_processed, already_processed_json_importer_issues, skipped_issuetypes, migrate_teams_check
     global set_source_project_read_only, shifted_by, merge_projects_flag, read_only_scheme_name, shifted_key_val
     global merge_projects_start_flag, process_only_last_updated_date_flag, dummy_parent, dummy_process
-    global processing_jira_jql
+    global processing_jira_jql, check_template_flag
     
     def json_process_issue(key):
         global jira_new, project_new, jira_old, issuetypes_mappings, sub_tasks, already_processed_json_importer_issues
@@ -4209,15 +4280,16 @@ def main_program():
             print("[WARNING] No PROJECT ADMIN rigts available for Source '{}' project. Sub-Tasks can't be converted into Issues.".format(project_old))
     
     # Validate values in template
-    print("[START] Template validation started.")
-    try:
-        validate_template()
-        print("[END] Template validation has been completed. No issues were found.")
-    except Exception as e:
-        print("[ERROR] Exception while processing validation: '{}'.".format(e))
-        if verbose_logging == 1:
-            print(traceback.format_exc())
-    print("")
+    if check_template_flag == 1:
+        print("[START] Template validation started.")
+        try:
+            validate_template()
+            print("[END] Template validation has been completed. No issues were found.")
+        except Exception as e:
+            print("[ERROR] Exception while processing validation: '{}'.".format(e))
+            if verbose_logging == 1:
+                print(traceback.format_exc())
+        print("")
     
     get_hierarchy_config()
     
@@ -5220,6 +5292,22 @@ def change_force_update(*args):
         process_change_history.set(json_importer_flag)
 
 
+def change_validate_template(*args):
+    global check_template_flag, skip_existing_issuetypes_validation_flag
+    check_template_flag = check_validate_template.get()
+    if check_template_flag == 0:
+        skip_existing_issuetypes_validation_flag = 0
+        skip_existing_issuetypes_validation.set(skip_existing_issuetypes_validation_flag)
+
+
+def change_skip_existing_issuetypes_validation(*args):
+    global skip_existing_issuetypes_validation_flag, check_template_flag
+    skip_existing_issuetypes_validation_flag = skip_existing_issuetypes_validation.get()
+    if skip_existing_issuetypes_validation_flag == 1:
+        check_template_flag = 1
+        check_validate_template.set(check_template_flag)
+
+
 def change_process_last_updated_date(*args):
     global process_only_last_updated_date_flag, last_updated_days_check, skip_migrated_flag, including_dependencies_flag
     global force_update_flag
@@ -5437,43 +5525,51 @@ if __name__ == "__main__":
     process_jsons = IntVar(value=multiple_json_data_processing)
     Checkbutton(main, text="Create JSON files instead of API calls.", font=("Helvetica", 9, "italic"), variable=process_jsons).grid(row=25, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_jsons.trace('w', change_jsons)
+
+    check_validate_template = IntVar(value=check_template_flag)
+    Checkbutton(main, text="Validate Template (check correctness of Issuetypes, Fields and Statuses)", font=("Helvetica", 9, "italic"), variable=check_validate_template).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    check_validate_template.trace('w', change_validate_template)
+
+    skip_existing_issuetypes_validation = IntVar(value=skip_existing_issuetypes_validation_flag)
+    Checkbutton(main, text="Skip validation for non-migrated issuetypes.", font=("Helvetica", 9, "italic"), variable=skip_existing_issuetypes_validation).grid(row=26, column=0, sticky=E, padx=140, columnspan=4, pady=0)
+    skip_existing_issuetypes_validation.trace('w', change_skip_existing_issuetypes_validation)
     
     merge_projects_start = IntVar(value=merge_projects_start_flag)
-    Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Starting Key in Target Project (i.e. first issue Key):", font=("Helvetica", 9, "italic"), variable=merge_projects_start).grid(row=27, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     merge_projects_start.trace('w', change_merge_project_start)
     
-    tk.Label(main, text="OR", font=("Helvetica", 9, "italic")).grid(row=26, column=0, columnspan=4, sticky=W, padx=362)
+    tk.Label(main, text="OR", font=("Helvetica", 9, "italic")).grid(row=27, column=0, columnspan=4, sticky=W, padx=362)
     
     shifted_by = check_similar("shifted_by", shifted_by)
     
     start_num = tk.Entry(main, width=7, textvariable=shifted_by)
     start_num.insert(END, shifted_by)
-    start_num.grid(row=26, column=0, pady=0, sticky=W, columnspan=4, padx=312)
+    start_num.grid(row=27, column=0, pady=0, sticky=W, columnspan=4, padx=312)
     
     merge_projects = IntVar(value=merge_projects_flag)
-    Checkbutton(main, text="Shifting Starting Key from max in Target Project by:", font=("Helvetica", 9, "italic"), variable=merge_projects).grid(row=26, column=0, sticky=E, padx=150, columnspan=4, pady=0)
+    Checkbutton(main, text="Shifting Starting Key from max in Target Project by:", font=("Helvetica", 9, "italic"), variable=merge_projects).grid(row=27, column=0, sticky=E, padx=150, columnspan=4, pady=0)
     merge_projects.trace('w', change_merge_project)
     
     shifted_key_val = check_similar("shifted_key_val", shifted_key_val)
     
     shift_num = tk.Entry(main, width=10, textvariable=shifted_key_val)
     shift_num.insert(END, shifted_key_val)
-    shift_num.grid(row=26, column=2, pady=0, sticky=E, columnspan=3, padx=82)
+    shift_num.grid(row=27, column=2, pady=0, sticky=E, columnspan=3, padx=82)
     
     set_read_only = IntVar(value=set_source_project_read_only)
-    Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=27, column=0, sticky=W, padx=20, columnspan=4, pady=0)
+    Checkbutton(main, text="Set Source Project as Read-Only after migration, by updating Permission Scheme to (containing):", font=("Helvetica", 9, "italic"), variable=set_read_only).grid(row=28, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     set_read_only.trace('w', change_read_only)
     
     read_only_scheme_name = check_similar("read_only_scheme_name", read_only_scheme_name)
     
     permission_scheme = tk.Entry(main, width=30, textvariable=read_only_scheme_name)
     permission_scheme.insert(END, read_only_scheme_name)
-    permission_scheme.grid(row=27, column=2, pady=0, sticky=W, columnspan=3, padx=35)
+    permission_scheme.grid(row=28, column=2, pady=0, sticky=W, columnspan=3, padx=35)
     
-    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=28, column=0, pady=8, columnspan=4, rowspan=2)
+    tk.Button(main, text='Quit', font=("Helvetica", 9, "bold"), command=main.quit, width=20, heigh=2).grid(row=29, column=0, pady=8, columnspan=4, rowspan=2)
     
     # The license details could be found here: https://github.com/delsakov/JIRA_Tools/
     # Please do not change line below with copyright
-    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=29, column=1, sticky=SE, padx=20, columnspan=3)
+    tk.Label(main, text="Author: Dmitry Elsakov", foreground="grey", font=("Helvetica", 8, "italic"), pady=10).grid(row=30, column=1, sticky=SE, padx=20, columnspan=3)
     
     tk.mainloop()
