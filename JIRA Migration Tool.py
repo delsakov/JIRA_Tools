@@ -31,7 +31,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.3'
+current_version = '3.4'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -128,7 +128,8 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 temp_dir_name = 'Attachments_Temp/'
 log_file = './MIGRATION_TOOL_OUT.txt'
 mapping_file = ''
-jira_system_fields = ['Summary', 'Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end']
+jira_system_fields = ['Summary', 'Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end', 'worklog']
+jira_system_skip_fields = ['Issue Type', 'Project', 'Linked Issues', 'Attachment', 'Parent', 'worklog']
 additional_mapping_fields = ['Description', 'Labels', 'Due Date', 'Target start', 'Target end']
 limit_migration_data = 0  # 0 if all
 save_validation_details = 0 # to save validation details in the .json file
@@ -1595,6 +1596,9 @@ def process_issue(key, reprocess=False):
                             dummy_process = 1
                     try:
                         parent_issue = jira_new.issue(parent)
+                        if parent_issue.fields.issuetype.name in sub_tasks.keys():
+                            parent = dummy_parent
+                            dummy_process = 1
                     except:
                         try:
                             if including_dependencies_flag == 1:
@@ -1622,7 +1626,7 @@ def process_issue(key, reprocess=False):
                     if parent is None and dummy_parent != '':
                         parent = dummy_parent
                         dummy_process = 1
-                    if parent != new_issue.fields.parent.key:
+                    if (hasattr(new_issue.fields, 'parent') and parent != new_issue.fields.parent.key) or not hasattr(new_issue.fields, 'parent'):
                         delete_issue(new_issue_key)
                         process_issue(new_issue_key.replace(project_new, project_old), reprocess=True)
                         return (0, key)
@@ -2145,17 +2149,22 @@ def get_dummy_parent(retry=False):
 
 
 def delete_issue(key):
-    global JIRA_BASE_URL_NEW, auth, threads, verify, verbose_logging
+    global JIRA_BASE_URL_NEW, auth, threads, verify, verbose_logging, username, password
     
     jira_auth = JIRA(JIRA_BASE_URL_NEW, auth=auth, async_workers=threads, max_retries=3, options={'verify': verify})
     try:
         issue = jira_auth.issue(key)
         issue.delete(deleteSubtasks=True)
         return (0, key)
-    except Exception as e:
-        if verbose_logging == 1:
-            print(traceback.format_exc())
-        return (1, key)
+    except:
+        try:
+            atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password, verify_ssl=verify)
+            atlassian_jira_new.delete_issue(key)
+            return (0, key)
+        except Exception as e:
+            if verbose_logging == 1:
+                print(traceback.format_exc())
+            return (1, key)
 
 
 def delete_extra_issues(max_id):
@@ -2264,7 +2273,10 @@ def create_dummy_issues(total_number, batch_size=100):
 
 def convert_to_subtask(parent, new_issue, sub_task_id):
     """ This function will convert issue to sub-task via parsing HTML page and apply emulation of conversion via UI. """
-    global auth, verify, json_importer_flag, verbose_logging
+    global auth, verify, json_importer_flag, verbose_logging, dummy_parent
+    
+    if parent is None or parent == '':
+        parent = dummy_parent
     
     session = requests.Session()
     
@@ -2906,7 +2918,8 @@ def check_user(user_name):
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
-    global jira_new, items_lst, json_importer_flag, migrate_teams_check, including_dependencies_flag
+    global jira_new, items_lst, json_importer_flag, migrate_teams_check, including_dependencies_flag, dummy_parent
+    global jira_system_skip_fields
     
     old_issuetype = old_issue.fields.issuetype.name
     
@@ -3309,6 +3322,8 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         except:
             parent_field = None
         parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
+        if parent is None and dummy_parent != '':
+            parent = dummy_parent
         if parent is not None and new_issuetype != issuetype:
             convert_to_subtask(parent, new_issue, sub_tasks[issuetype])
             diff_issuetypes = 0
@@ -3331,20 +3346,20 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             continue
         if n_field not in issue_details_old[old_issuetype].keys():
             continue
-        if (n_values['custom type'] is None and n_field not in ['Issue Type', 'Project', 'Linked Issues', 'Attachment', 'Parent']) or (n_field in jira_system_fields):
+        if (n_values['custom type'] is None and n_field not in jira_system_skip_fields) or (n_field in jira_system_fields):
             data_val[n_values['id']] = get_old_system_field(n_field)
     
     # Non-linked Custom fields - clear them out
     for new_field in issue_details_new[issuetype].keys():
-        if new_field not in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] and new_field not in jira_system_fields and new_field not in fields_mappings[old_issuetype].keys():
+        if new_field not in jira_system_skip_fields and new_field not in jira_system_fields and new_field not in fields_mappings[old_issuetype].keys():
             if issue_details_new[issuetype][new_field]['type'] in ['string']:
                 data_value = ''
-            elif issue_details_new[issuetype][new_field]['type'] in ['user', 'array']:
+            elif issue_details_new[issuetype][new_field]['type'] in ['array']:
                 data_value = []
             else:
                 data_value = None
             data_val[issue_details_new[issuetype][new_field]['id']] = data_value
-
+    
     # Custom fields
     if old_issuetype in fields_mappings.keys():
         for n_field in fields_mappings[old_issuetype].keys():
@@ -3352,7 +3367,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 continue
             if n_field == '':
                 continue
-            if n_field not in issue_details_new[issuetype].keys() or n_field in ['Issue Type', 'Summary', 'Project', 'Linked Issues', 'Attachment', 'Parent'] or n_field in jira_system_fields:
+            if n_field not in issue_details_new[issuetype].keys() or n_field in jira_system_skip_fields or n_field in jira_system_fields:
                 continue
             data_value = None
             o_field_value = get_old_field(n_field, data_val=data_val)
@@ -3383,6 +3398,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                                             data_value.append({"name": i})
                             except:
                                 data_value.append({"name": None})
+                        # Fix for missing users
+                        data_value_users = []
+                        for user in data_value:
+                            if user["name"] is not None and check_user(user["name"]):
+                                data_value_users.append(user)
+                        data_value = data_value_users
                     else:
                         try:
                             if not check_user(n_field_value.name):
@@ -3396,6 +3417,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         data_value = ['' if (i is None or i == 'None') else i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in n_field_value]
                     else:
                         data_value = [n_field_value.replace(' ', '_').replace('\n', '_').replace('\t', '_')]
+                    data_value = list(set(data_value))
+                    if '' in data_value:
+                        data_value.remove('')
                 elif issue_details_new[new_issuetype][n_field]['custom type'] == 'rs.codecentric.label-manager-project:labelManagerCustomField':
                     if type(n_field_value) == list and n_field_value != '':
                         data_value = n_field_value
@@ -3530,6 +3554,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             data_val.pop(issue_details_new[issuetype]['Sprint']['id'], None)
         except:
             pass
+    
+    # Post-processing fix for Assignee, Reporter
+    if 'assignee' in data_val.keys() and data_val['assignee'] == []:
+        data_val['assignee'] = None
+    if 'reporter' in data_val.keys() and data_val['reporter'] == []:
+        data_val['reporter'] = None
     
     # Post-processing fix for Components, versions
     if 'components' in data_val.keys() and data_val['components'] is None:
@@ -3695,6 +3725,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         new_issue.update(notify=False, fields=data_val)
                     except:
                         data_val.pop('components', None)
+                        new_issue.update(notify=False, fields=data_val)
+                elif "Issue type is a sub-task but parent issue key or id not specified." in e.text and json_importer_flag == 1:
+                    if dummy_parent != '':
+                        data_val["parent"] = dummy_parent
                         new_issue.update(notify=False, fields=data_val)
                 else:
                     print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
@@ -3875,8 +3909,8 @@ def validate_template():
             else:
                 total = 1
             old_issuetypes_totals[old_issuetype] = total
-
-# Checking Target issuetype mappings
+    
+    # Checking Target issuetype mappings
     for issuetype, old_issuetypes in issuetypes_mappings.items():
         if issuetype != '':
             type_not_found = 1
@@ -5525,11 +5559,11 @@ if __name__ == "__main__":
     process_jsons = IntVar(value=multiple_json_data_processing)
     Checkbutton(main, text="Create JSON files instead of API calls.", font=("Helvetica", 9, "italic"), variable=process_jsons).grid(row=25, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_jsons.trace('w', change_jsons)
-
+    
     check_validate_template = IntVar(value=check_template_flag)
     Checkbutton(main, text="Validate Template (check correctness of Issuetypes, Fields and Statuses)", font=("Helvetica", 9, "italic"), variable=check_validate_template).grid(row=26, column=0, sticky=W, padx=20, columnspan=4, pady=0)
     check_validate_template.trace('w', change_validate_template)
-
+    
     skip_existing_issuetypes_validation = IntVar(value=skip_existing_issuetypes_validation_flag)
     Checkbutton(main, text="Skip validation for non-migrated issuetypes.", font=("Helvetica", 9, "italic"), variable=skip_existing_issuetypes_validation).grid(row=26, column=0, sticky=E, padx=140, columnspan=4, pady=0)
     skip_existing_issuetypes_validation.trace('w', change_skip_existing_issuetypes_validation)
