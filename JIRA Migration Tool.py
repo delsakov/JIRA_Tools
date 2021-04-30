@@ -31,7 +31,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.4'
+current_version = '3.5'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -1535,9 +1535,14 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
 
 
 def get_parent_for_subtask(issue, issue_type):
-    global issue_details_old
+    global issue_details_old, dummy_parent, dummy_process
     
     parent = None
+    try:
+        parent = issue.fields.parent.key
+        return parent
+    except:
+        pass
     try:
         parent = eval('issue.fields.' + issue_details_old[issue_type]['Epic Link']['id'])
         return parent
@@ -1547,11 +1552,19 @@ def get_parent_for_subtask(issue, issue_type):
         parent = eval('issue.fields.' + issue_details_old[issue_type]['Parent Link']['id'])
         return parent
     except:
-        return parent
+        pass
+    if dummy_parent != '':
+        parent = dummy_parent
+        dummy_process = 1
+    return parent
 
 
 def process_issue(key, reprocess=False):
-    '''Main migration Function - issue migration processing here.'''
+    """ Main migration Function - issue migration processing here.
+    :param key: JIRA Issue key
+    :param reprocess: Flag for re-processing (if issue was deleted beforehand)
+    :return: '0' is successful and '1' if failed
+    """
     global items_lst, jira_new, project_new, jira_old, migrate_comments_check, migrate_links_check, migrated_text
     global migrate_attachments_check, migrate_statuses_check, migrate_metadata_check, create_remote_link_for_old_issue
     global max_id, json_importer_flag, issuetypes_mappings, sub_tasks, failed_issues, issue_details_old, dummy_parent
@@ -1560,16 +1573,17 @@ def process_issue(key, reprocess=False):
     
     try:
         new_issue_type = ''
+        issue_type = None
+        new_status = None
         if reprocess is False:
             new_issue_key = get_shifted_key(project_new + '-' + str(key.split('-')[1]))
         else:
             new_issue_key = project_new + '-' + str(key.split('-')[1])
         try:
             old_issue = jira_old.issue(key, expand="changelog")
-            if json_importer_flag == 1 or migrate_metadata_check == 1:
-                issue_type = old_issue.fields.issuetype.name
-                new_issue_type = get_new_issuetype(issue_type)
-                new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
+            issue_type = old_issue.fields.issuetype.name
+            new_issue_type = get_new_issuetype(issue_type)
+            new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
         except:
             try:
                 if json_importer_flag == 0:
@@ -1580,20 +1594,11 @@ def process_issue(key, reprocess=False):
                 return (0, key)
         try:
             new_issue = jira_new.issue(new_issue_key, expand="changelog")
-            if json_importer_flag == 1:
-                issue_type = old_issue.fields.issuetype.name
-                if new_issue_type in sub_tasks.keys() and new_issue_type != new_issue.fields.issuetype.name:
-                    try:
-                        parent_field = old_issue.fields.parent
-                    except:
-                        parent_field = None
-                    parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
-                    if parent is None:
-                        parent_calculated = get_parent_for_subtask(old_issue, issue_type)
-                        parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
-                        if parent is None and dummy_parent != '':
-                            parent = dummy_parent
-                            dummy_process = 1
+            existent_new_type = new_issue.fields.issuetype.name
+            if json_importer_flag == 1 and new_issue_type in sub_tasks.keys():
+                if new_issue_type != existent_new_type:
+                    parent_calculated = get_parent_for_subtask(old_issue, issue_type)
+                    parent = None if parent_calculated is None else parent_calculated.replace(project_old, project_new)
                     try:
                         parent_issue = jira_new.issue(parent)
                         if parent_issue.fields.issuetype.name in sub_tasks.keys():
@@ -1609,6 +1614,9 @@ def process_issue(key, reprocess=False):
                                         break
                             try:
                                 parent_issue = jira_new.issue(parent)
+                                if parent_issue.fields.issuetype.name in sub_tasks.keys():
+                                    parent = dummy_parent
+                                    dummy_process = 1
                             except:
                                 if dummy_parent != '':
                                     parent = dummy_parent
@@ -1620,22 +1628,18 @@ def process_issue(key, reprocess=False):
                             return (0, key)
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                elif new_issue_type in sub_tasks.keys():
+                else:
                     parent_calculated = get_parent_for_subtask(old_issue, issue_type)
-                    parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
-                    if parent is None and dummy_parent != '':
-                        parent = dummy_parent
-                        dummy_process = 1
-                    if (hasattr(new_issue.fields, 'parent') and parent != new_issue.fields.parent.key) or not hasattr(new_issue.fields, 'parent'):
+                    parent = None if parent_calculated is None else parent_calculated.replace(project_old, project_new)
+                    if (hasattr(new_issue.fields, 'parent') and parent != existent_new_type) or not hasattr(new_issue.fields, 'parent'):
                         delete_issue(new_issue_key)
-                        process_issue(new_issue_key.replace(project_new, project_old), reprocess=True)
-                        return (0, key)
-                if force_update_flag == 1:
-                    if new_issue_type in sub_tasks.keys():
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
-                    else:
-                        status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
-                    sleep(1)
+                        return process_issue(new_issue_key.replace(project_new, project_old), reprocess=True)
+            if force_update_flag == 1:
+                if new_issue_type in sub_tasks.keys():
+                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
+                else:
+                    status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                sleep(1)
         except Exception as e:
             if json_importer_flag == 0:
                 print("[ERROR] Missing issue key in Target project. Exception: '{}'".format(e))
@@ -1644,25 +1648,14 @@ def process_issue(key, reprocess=False):
                 return(0, key)
             else:
                 parent = None
-                issue_type = old_issue.fields.issuetype.name
-                try:
-                    new_status = get_new_status(old_issue.fields.status.name, issue_type, new_issue_type)
-                except:
-                    print("[ERROR] Status '{}' can't be mapped for '{}' - check Mapping file.".format(old_issue.fields.status.name, issue_type))
                 if new_issue_type in sub_tasks.keys():
-                    try:
-                        parent_field = old_issue.fields.parent
-                    except:
-                        parent_field = None
-                    parent = None if parent_field is None else get_shifted_key(parent_field.key.replace(project_old, project_new))
-                    if parent is None:
-                        parent_calculated = get_parent_for_subtask(old_issue, issue_type)
-                        parent = parent_calculated.replace(project_old, project_new) if parent_calculated is not None else parent_calculated
-                        if parent is None and dummy_parent != '':
-                            parent = dummy_parent
-                            dummy_process = 1
+                    parent_calculated = get_parent_for_subtask(old_issue, issue_type)
+                    parent = None if parent_calculated is None else parent_calculated.replace(project_old, project_new)
                     try:
                         parent_issue = jira_new.issue(parent)
+                        if parent_issue.fields.issuetype.name in sub_tasks.keys():
+                            parent = dummy_parent
+                            dummy_process = 1
                     except:
                         try:
                             if including_dependencies_flag == 1:
@@ -1671,13 +1664,10 @@ def process_issue(key, reprocess=False):
                                     if parent_issue_old.fields.issuetype.name in v:
                                         process_issue(parent.replace(project_new, project_old), reprocess=True)
                                         break
-                            try:
-                                parent_issue = jira_new.issue(parent)
-                            except:
-                                if dummy_parent != '':
-                                    parent = dummy_parent
-                                    dummy_process = 1
-                                parent_issue = jira_new.issue(parent)
+                            parent_issue = jira_new.issue(parent)
+                            if parent_issue.fields.issuetype.name in sub_tasks.keys():
+                                parent = dummy_parent
+                                dummy_process = 1
                         except:
                             print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
                             delete_issue(new_issue_key)
@@ -1692,6 +1682,7 @@ def process_issue(key, reprocess=False):
                         if parent is not None:
                             convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                             status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
+                            sleep(1)
                         break
                     except:
                         sleep(1)
@@ -3340,6 +3331,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     if diff_issuetypes == 1:
         update_issuetype(issuetype, new_issuetype)
     
+    # Non-linked Custom fields - clear them out
+    for new_field in issue_details_new[issuetype].keys():
+        if new_field not in jira_system_skip_fields and new_field not in jira_system_fields and old_issuetype in fields_mappings.keys() and new_field not in fields_mappings[old_issuetype].keys():
+            if issue_details_new[issuetype][new_field]['type'] in ['string']:
+                data_value = ''
+            elif issue_details_new[issuetype][new_field]['type'] in ['array']:
+                data_value = []
+            else:
+                data_value = None
+            data_val[issue_details_new[issuetype][new_field]['id']] = data_value
+    
     # System fields
     for n_field, n_values in issue_details_new[issuetype].items():
         if issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team']:
@@ -3348,17 +3350,6 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             continue
         if (n_values['custom type'] is None and n_field not in jira_system_skip_fields) or (n_field in jira_system_fields):
             data_val[n_values['id']] = get_old_system_field(n_field)
-    
-    # Non-linked Custom fields - clear them out
-    for new_field in issue_details_new[issuetype].keys():
-        if new_field not in jira_system_skip_fields and new_field not in jira_system_fields and new_field not in fields_mappings[old_issuetype].keys():
-            if issue_details_new[issuetype][new_field]['type'] in ['string']:
-                data_value = ''
-            elif issue_details_new[issuetype][new_field]['type'] in ['array']:
-                data_value = []
-            else:
-                data_value = None
-            data_val[issue_details_new[issuetype][new_field]['id']] = data_value
     
     # Custom fields
     if old_issuetype in fields_mappings.keys():
@@ -3679,6 +3670,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         print("[INFO] The details for update: '{}'".format(data_val))
         print("")
     
+    # Post-processing for other system-related fields:
+    if "worklog" in data_val.keys():
+        data_val.pop("worklog", None)
+    
     try:
         new_issue.update(notify=False, fields=data_val)
     except Exception as er:
@@ -3773,13 +3768,14 @@ def generate_template():
     password = passwd.get()
     mapping_file = file.get()
     if mapping_file == '':
-        mapping_file = 'Migration Template for {} project to {} project.xlsx'.format(project_old, project_new)
+        mapping_file = "Migration Template for {} project to {} project.xlsx".format(project_old, project_new)
     else:
         mapping_file = mapping_file.split('.xls')[0] + '.xlsx'
     main.destroy()
     change_mappings_configs()
     if len(username) < 3 or len(password) < 3:
-        print('[WARNING] JIRA credentials missing. Please enter them on new window.')
+        print("[INFO] Please enter JIRA Credentials on new window.")
+        print("")
         jira_authorization_popup()
     else:
         auth = (username, password)
@@ -3792,8 +3788,8 @@ def generate_template():
         os.system("pause")
         exit()
     
-    print('[START] Template is being generated. Please wait...')
-    print('')
+    print("[START] Template is being generated. Please wait...")
+    print("")
     print("[START] Fields configuration downloading from Source '{}' and Target '{}' projects".format(project_old, project_new))
     
     check_global_admin_rights()
@@ -4943,22 +4939,22 @@ def change_configs():
     last_updated.insert(END, last_updated_date)
     last_updated.grid(row=9, column=3, columnspan=2, padx=70, stick=W)
     
-    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=9, columnspan=5)
+    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=10, columnspan=5)
     
-    tk.Label(config_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=10, column=0, columnspan=4, stick=W)
+    tk.Label(config_popup, text="If Source Project doesn't exist, it could be created as copy of Template Project Key:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=11, column=0, columnspan=4, stick=W)
     template_proj = tk.Entry(config_popup, width=20, textvariable=template_project)
     template_proj.insert(END, template_project)
-    template_proj.grid(row=10, column=3, columnspan=2, padx=30, stick=E)
+    template_proj.grid(row=11, column=3, columnspan=2, padx=30, stick=E)
     
-    tk.Label(config_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=11, column=1, columnspan=3, stick=W)
+    tk.Label(config_popup, text="and Target Project Name would be:", foreground="black", font=("Helvetica", 10), pady=7, padx=5, wraplength=550).grid(row=12, column=1, columnspan=3, stick=W)
     name_proj = tk.Entry(config_popup, width=45, textvariable=new_project_name)
     name_proj.insert(END, new_project_name)
-    name_proj.grid(row=11, column=2, columnspan=3, padx=30, stick=E)
+    name_proj.grid(row=12, column=2, columnspan=3, padx=30, stick=E)
     
-    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=12, columnspan=5)
+    tk.Label(config_popup, text="____________________________________________________________________________________________________________").grid(row=13, columnspan=5)
     
-    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=13, column=0, pady=8, padx=20, sticky=W, columnspan=3)
-    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=13, column=2, pady=8, padx=20, sticky=E, columnspan=3)
+    tk.Button(config_popup, text='Cancel', font=("Helvetica", 9, "bold"), command=config_popup_close, width=20, heigh=2).grid(row=14, column=0, pady=8, padx=20, sticky=W, columnspan=3)
+    tk.Button(config_popup, text='Save', font=("Helvetica", 9, "bold"), command=config_save, width=20, heigh=2).grid(row=14, column=2, pady=8, padx=20, sticky=E, columnspan=3)
     
     tk.mainloop()
 
