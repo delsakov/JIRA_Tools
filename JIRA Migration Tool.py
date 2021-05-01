@@ -31,7 +31,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '3.5'
+current_version = '3.6'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -128,7 +128,7 @@ excel_columns_validation_ranges = {'0': 'A2:A1048576',
 temp_dir_name = 'Attachments_Temp/'
 log_file = './MIGRATION_TOOL_OUT.txt'
 mapping_file = ''
-jira_system_fields = ['Summary', 'Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end', 'worklog']
+jira_system_fields = ['Summary', 'Sprint', 'Epic Link', 'Epic Name', 'Story Points', 'Parent Link', 'Flagged', 'Target start', 'Target end']
 jira_system_skip_fields = ['Issue Type', 'Project', 'Linked Issues', 'Attachment', 'Parent', 'worklog']
 additional_mapping_fields = ['Description', 'Labels', 'Due Date', 'Target start', 'Target end']
 limit_migration_data = 0  # 0 if all
@@ -265,7 +265,9 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                         if mapping_type == 0:
                             issuetypes_mappings[d[2]] = {"hierarchy": d[1], "issuetypes": d[3].split(',')}
                         else:
-                            if d[1] in issuetypes_mappings.keys():
+                            if d[0] == '':
+                                break
+                            elif d[1] in issuetypes_mappings.keys():
                                 issuetypes_mappings[d[1]]["issuetypes"].append(d[0])
                             else:
                                 issuetypes_mappings[d[1]] = {"hierarchy": '2', "issuetypes": [d[0]]}
@@ -273,7 +275,9 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                         if mapping_type == 0:
                             link_mappings[d[0].strip()] = [d[2].strip()]
                         else:
-                            if d[2].strip() in link_mappings.keys():
+                            if d[0] == '':
+                                break
+                            elif d[2].strip() in link_mappings.keys():
                                 link_mappings[d[2].strip()].append(d[0].strip())
                             else:
                                 link_mappings[d[2].strip()] = [d[0].strip()]
@@ -285,7 +289,9 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                 else:
                                     status_mappings[issuetype.strip()][d[1].strip()] = d[2].split(',')
                         else:
-                            if d[0].strip() in status_mappings.keys():
+                            if d[0] == '':
+                                break
+                            elif d[0].strip() in status_mappings.keys():
                                 if d[2].strip() in status_mappings[d[0].strip()].keys():
                                     status_mappings[d[0].strip()][d[2].strip()].append(d[1].strip())
                                 else:
@@ -350,20 +356,59 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
     #         issues.append(issuetype.strip())
     #     issuetypes_mappings[k]['issuetypes'] = issues
     
-    status_mappings = remove_spaces(status_mappings)
+    # status_mappings = remove_spaces(status_mappings)
     # fields_mappings = remove_spaces(fields_mappings)
     # field_value_mappings = remove_spaces(field_value_mappings)
     print("[END] Mapping data has been successfully processed.")
     print("")
 
 
+def get_transitions_per_issuetype(params):
+    global JIRA_workflow_api, old_transitions, new_transitions, auth, headers, verify
+    
+    try:
+        statuses_lst = []
+        jira_url, workflow_name, issuetype, project, new = params
+        url0 = jira_url + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
+        url1 = jira_url + '/' + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
+        r = requests.get(url0, auth=auth, headers=headers, verify=verify)
+        if r.status_code == 200:
+            workflow_string = r.content.decode('utf-8')
+        else:
+            r = requests.get(url1, auth=auth, headers=headers, verify=verify)
+            workflow_string = r.content.decode('utf-8')
+        workflow_data = json.loads(workflow_string)
+        transition_details = []
+        for status in workflow_data["sources"]:
+            if len(status["targets"]) > 0:
+                for target in status["targets"]:
+                    transition_details.append([status["fromStatus"]["name"], target['transitionName'], target['toStatus']['name']])
+            else:
+                statuses_lst.append(status["fromStatus"]["name"])
+                transition_details.append([status["fromStatus"]["name"], status["fromStatus"]["name"], ''])
+        temp_transitions = []
+        for transition in transition_details:
+            if transition[2] == '':
+                for missing_status in statuses_lst:
+                    if transition[2] == '':
+                        transition[2] = missing_status
+                    else:
+                        temp_transitions.append([missing_status, missing_status, missing_status])
+        transition_details.extend(temp_transitions)
+        if new is False:
+            old_transitions[issuetype] = transition_details
+        else:
+            new_transitions[issuetype] = transition_details
+        return (0, params)
+    except:
+        return (1, params)
+
+
 def get_transitions(project, jira_url, new=False):
     global old_transitions, new_transitions, auth, migrate_statuses_check, headers, verify, verbose_logging
-    global replace_complete_statuses_flag, JIRA_workflow_api
+    global replace_complete_statuses_flag, JIRA_workflow_api, default_max_retries, max_retries
     
     print("[START] Retrieving Transitions and Statuses for {} '{}' project from JIRA.".format('Target' if new is True else 'Source', project))
-    
-    statuses_lst = []
     
     def get_workflows(project, jira_url, new):
         global sub_tasks, auth, old_sub_tasks, new_issues_ids, JIRA_workflowscheme_api
@@ -386,40 +431,12 @@ def get_transitions(project, jira_url, new=False):
         return workflows
     
     try:
-        transitions = {}
+        params = []
         for workflow_name, workflow_details in get_workflows(project, jira_url, new).items():
             for issuetype in workflow_details:
-                url0 = jira_url + '/' + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
-                url1 = jira_url + JIRA_workflow_api.format(urllib.parse.quote_plus(workflow_name), project)
-                r = requests.get(url0, auth=auth, headers=headers, verify=verify)
-                if r.status_code == 200:
-                    workflow_string = r.content.decode('utf-8')
-                else:
-                    r = requests.get(url1, auth=auth, headers=headers, verify=verify)
-                    workflow_string = r.content.decode('utf-8')
-                workflow_data = json.loads(workflow_string)
-                transition_details = []
-                for status in workflow_data["sources"]:
-                    if len(status["targets"]) > 0:
-                        for target in status["targets"]:
-                            transition_details.append([status["fromStatus"]["name"], target['transitionName'], target['toStatus']['name']])
-                    else:
-                        statuses_lst.append(status["fromStatus"]["name"])
-                        transition_details.append([status["fromStatus"]["name"], status["fromStatus"]["name"], ''])
-                temp_transitions = []
-                for transition in transition_details:
-                    if transition[2] == '':
-                        for missing_status in statuses_lst:
-                            if transition[2] == '':
-                                transition[2] = missing_status
-                            else:
-                                temp_transitions.append([missing_status, missing_status, missing_status])
-                transition_details.extend(temp_transitions)
-                transitions[issuetype] = transition_details
-        if new is False:
-            old_transitions = transitions
-        else:
-            new_transitions = transitions
+                params.append((jira_url, workflow_name, issuetype, project, new))
+        max_retries = default_max_retries
+        threads_processing(get_transitions_per_issuetype, params)
         
         if replace_complete_statuses_flag == 1:
             get_statuses(jira_url=jira_url, new=new)
@@ -842,8 +859,22 @@ def get_jira_connection():
     
     # Check SSL certification and use unsecured connection if not available
     try:
-        jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
-        jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
+        try:
+            jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
+        except Exception as e:
+            if e.status_code == 503:
+                print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_OLD))
+                print("")
+                os.system("pause")
+                exit()
+        try:
+            jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
+        except Exception as e:
+            if e.status_code == 503:
+                print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_NEW))
+                print("")
+                os.system("pause")
+                exit()
     except:
         jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0, options={'verify': False})
         jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0, options={'verify': False})
@@ -1519,7 +1550,7 @@ def get_new_status(old_status, old_issue_type, new_issue_type=None):
             if l[0] == type and l[1] == status:
                 return status
         default_status = new_transitions[type][0][0]
-        print("[ERROR] Mapping of '{}' Source Status to the correct Target Status hasn't been found! Default '{}' Status would be used instead.".format(status, default_status))
+        print("[WARNING] Mapping of '{}' Source Status for '{}' Target Issuetype Status hasn't been found! Default '{}' Status would be used instead.".format(status, type, default_status))
         return default_status
     
     try:
@@ -3557,17 +3588,37 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
         data_val['components'] = []
     
     # Post-processing for OLD Components / Versions with spaces in the very beginning
-    if 'versions' in data_val.keys() and data_val['versions'] != [] and data_val['versions'] is not None:
+    if ('versions' not in data_val.keys() or data_val['versions'] == []) and 'versions' in issue_details_new[issuetype].keys():
+        try:
+            temp_versions = [{'name': i.name.strip()} for i in old_issue.fields.versions]
+            data_val['versions'] = get_correct_versions(temp_versions)
+        except:
+            pass
+    elif 'versions' in data_val.keys() and data_val['versions'] != [] and data_val['versions'] is not None:
         temp_versions = []
         for version in data_val['versions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['versions'] = get_correct_versions(temp_versions)
-    if 'fixVersions' in data_val.keys() and data_val['fixVersions'] != [] and data_val['fixVersions'] is not None:
+    
+    if ('fixVersions' not in data_val.keys() or data_val['fixVersions'] == []) and 'fixVersions' in issue_details_new[issuetype].keys():
+        try:
+            temp_versions = [{'name': i.name.strip()} for i in old_issue.fields.fixVersions]
+            data_val['fixVersions'] = get_correct_versions(temp_versions)
+        except:
+            pass
+    elif 'fixVersions' in data_val.keys() and data_val['fixVersions'] != [] and data_val['fixVersions'] is not None:
         temp_versions = []
         for version in data_val['fixVersions']:
             temp_versions.append({'name': version['name'].strip()})
         data_val['fixVersions'] = get_correct_versions(temp_versions)
-    if 'components' in data_val.keys() and data_val['components'] != [] and data_val['components'] is not None:
+    
+    if ('components' not in data_val.keys() or data_val['components'] == []) and 'components' in issue_details_new[issuetype].keys():
+        try:
+            temp_components = [{'name': i.name.strip()} for i in old_issue.fields.components]
+            data_val['components'] = get_correct_components(temp_components)
+        except:
+            pass
+    elif 'components' in data_val.keys() and data_val['components'] != [] and data_val['components'] is not None:
         temp_components = []
         for component in data_val['components']:
             temp_components.append({'name': component['name'].strip()})
@@ -3907,6 +3958,10 @@ def validate_template():
             old_issuetypes_totals[old_issuetype] = total
     
     # Checking Target issuetype mappings
+    if ('' in issuetypes_mappings.keys() and len(issuetypes_mappings.keys()) <= 1) or ('' not in issuetypes_mappings.keys() and len(issuetypes_mappings.keys()) < 1):
+        print("")
+        print("[ERROR] [ISSUETYPES] Template wasn't populated. Issietypes mapping is EMPTY.")
+        template_error = 1
     for issuetype, old_issuetypes in issuetypes_mappings.items():
         if issuetype != '':
             type_not_found = 1
@@ -3943,6 +3998,12 @@ def validate_template():
         error_processed = 0
     
     # Checking Target field mappings
+    total_fields_mapped = 0
+    for o_it in fields_mappings.keys():
+        if ('' in fields_mappings[o_it].keys() and len(fields_mappings[o_it].keys()) > 1) or ('' not in fields_mappings[o_it].keys() and len(fields_mappings[o_it].keys()) > 0):
+            total_fields_mapped += 1
+    if total_fields_mapped < 1:
+        print("[WARNING] [FIELDS] Fields mapping hasn't been populated. ONLY System fields would be migrated.")
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             if old_issuetypes_totals[old_issuetype] > 0:
@@ -4006,6 +4067,13 @@ def validate_template():
             statuses_lst.append(l[2])
         new_issuetype_statuses[k] = list(set(statuses_lst))
     
+    total_statuses_mapped = 0
+    for o_it in status_mappings.keys():
+        if ('' in status_mappings[o_it].keys() and len(status_mappings[o_it].keys()) > 1) or ('' not in status_mappings[o_it].keys() and len(status_mappings[o_it].keys()) > 0):
+            total_statuses_mapped += 1
+    if total_statuses_mapped < 1:
+        print("[WARNING] [STATUSES] Statuses mapping hasn't been populated. DEFAULT Status would be used for ALL statuses.")
+    
     for issuetype, values in issuetypes_mappings.items():
         for old_issuetype in values['issuetypes']:
             if old_issuetypes_totals[old_issuetype] > 0:
@@ -4020,9 +4088,14 @@ def validate_template():
                                         break
                                 if status_not_found == 1:
                                     print("[ERROR] Target Status '{}' is incorrect. Details: Source Issuetype: '{}', Target Issuetype: '{}'. Mapped to Source statuses: '{}'".format(n_status, old_issuetype, issuetype, old_statuses))
+                                    print("[INFO] Available Statuses for Target '{}' issuetype '{}': ".format(n_status, new_issuetype_statuses[issuetype]))
                                     template_error = 1
                             except:
                                 pass
+                        else:
+                            for n_issuetype, old_issuetypes in issuetypes_mappings.items():
+                                if n_issuetype != '' and old_issuetype in old_issuetypes['issuetypes']:
+                                    print("[WARNING] Old Statuses '{}' have not been mapped for '{}' Issuetype in Source project. DEFAULT Status would be used for them.".format(old_statuses, old_issuetype))
                 except:
                     if issuetype != '':
                         print("[WARNING] Please check the '{}' Source Issuetype value in Statuses. Looks like it missing spaces. It would be skipped.".format(old_issuetype))
