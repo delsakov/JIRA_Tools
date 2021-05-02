@@ -862,19 +862,25 @@ def get_jira_connection():
         try:
             jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
         except Exception as e:
-            if e.status_code == 503:
-                print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_OLD))
-                print("")
-                os.system("pause")
-                exit()
+            try:
+                if e.status_code == 503:
+                    print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_OLD))
+                    print("")
+                    os.system("pause")
+                    exit()
+            except:
+                pass
         try:
             jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
         except Exception as e:
-            if e.status_code == 503:
-                print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_NEW))
-                print("")
-                os.system("pause")
-                exit()
+            try:
+                if e.status_code == 503:
+                    print("[ERROR] JIRA '{}' not available. Please check connectivity and try again later.".format(JIRA_BASE_URL_NEW))
+                    print("")
+                    os.system("pause")
+                    exit()
+            except:
+                pass
     except:
         jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0, options={'verify': False})
         jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0, options={'verify': False})
@@ -1652,7 +1658,6 @@ def process_issue(key, reprocess=False):
                                 if dummy_parent != '':
                                     parent = dummy_parent
                                     dummy_process = 1
-                                parent_issue = jira_new.issue(parent)
                         except:
                             print("[ERROR] Parent '{}' for '{}' has not been mapped in Mapping file or can't be found in Source project. Sub-Task '{}' would not be created. Skipped.".format(parent, new_issue_type, new_issue_key))
                             delete_issue(new_issue_key)
@@ -1706,7 +1711,7 @@ def process_issue(key, reprocess=False):
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                 elif get_shifted_key(old_issue.key.replace(project_old, project_new)) not in already_processed_json_importer_issues:
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
-                n = 60
+                n = 90
                 while True:
                     try:
                         new_issue = jira_new.issue(new_issue_key, expand="changelog")
@@ -2520,17 +2525,15 @@ def get_statuses(jira_url, new=False):
         new_statuses = statuses
 
 
-def get_priority(new_issue_type, old_issue):
-    global field_value_mappings, issue_details_new, issuetypes_mappings
-    
+def get_priority(new_issue_type, old_issue, create_issue=False):
+    global field_value_mappings, issue_details_new, issuetypes_mappings, project_new
+
     if new_issue_type is None:
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] in ['2', '3']:
                 new_issue_type = k
                 break
-    else:
-        new_priority = issue_details_new[new_issue_type]['Priority']['default value']
-    
+    default_priority = issue_details_new[new_issue_type]['Priority']['default value']
     try:
         old_priority = old_issue.fields.priority.name
     except:
@@ -2538,10 +2541,15 @@ def get_priority(new_issue_type, old_issue):
     try:
         for new_value, old_values in field_value_mappings['Priority'].items():
             if str(old_priority.strip()) in old_values and new_value != '':
-                return new_value
-    except:
-        pass
-    return new_priority
+                proposed_priority = new_value
+                if proposed_priority in issue_details_new[new_issue_type]['Priority']['allowed values']:
+                    return proposed_priority
+        if create_issue:
+            print("[WARNING] Priority '{}' hasn't been found in the Target '{}' project. Default '{}' Priority would be used instead.".format(proposed_priority, project_new, default_priority.upper()))
+    except Exception as e:
+        if create_issue:
+            print("[WARNING] Priority hasn't been found in the Target '{}' project. Default '{}' Priority would be used instead. ERROR: '{}'.".format(project_new, default_priority.upper(), e))
+    return default_priority
 
 
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
@@ -2848,7 +2856,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
                 project_issue["status"] = check_status(new_status, new_issue_type)
             project_issue["resolutionDate"] = old_issue.fields.resolutiondate
             project_issue["resolution"] = None if old_issue.fields.resolution is None else old_issue.fields.resolution.name
-        project_issue["priority"] = get_priority(new_issue_type, old_issue)
+        project_issue["priority"] = get_priority(new_issue_type, old_issue, create_issue=True)
         project_issue["created"] = old_issue.fields.created
         project_issue["history"] = histories
         project_issue["worklogs"] = worklogs
@@ -2999,7 +3007,18 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
-                    cont_value.append({"value": get_new_value_from_mapping(v.value, new_field)})
+                    if issue_details_new[issuetype][new_field]['custom type'] == 'multiselect':
+                        if issue_details_new[new_issuetype][new_field]['validated'] is True and v is not None:
+                            found = 0
+                            for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                                if str(v.value) == str(values):
+                                    cont_value.append({"value": str(v.value)})
+                                    found = 1
+                                    break
+                            if found == 0:
+                                cont_value.append({"value": None})
+                        else:
+                            cont_value.append({"value": get_new_value_from_mapping(v.value, new_field)})
                 else:
                     cont_value.append(get_new_value_from_mapping(v, new_field))
             return cont_value
@@ -3236,7 +3255,17 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if processed is True:
                     added_value = '' if o_field_val is None else o_field_val
                 else:
-                    added_value = '' if get_value(o_field) is None else get_str_from_lst(get_value(o_field))
+                    try:
+                        try:
+                            calculated_value = [i.displayName for i in get_value(o_field)]
+                        except:
+                            try:
+                                calculated_value = [i.name for i in get_value(o_field)]
+                            except:
+                                calculated_value = [i.value for i in get_value(o_field)]
+                    except:
+                        calculated_value = get_value(o_field)
+                    added_value = '' if calculated_value is None else get_str_from_lst(calculated_value)
                 if new_field == 'Description':
                     concatenated_value += '' if added_value == '' else '\r\n *[' + o_field + ']:* ' + added_value
                 else:
@@ -4730,6 +4759,7 @@ def main_program():
             print("[INFO] Source Project has been updated to Read-Only after migration.")
             print("")
     
+    print("[COMPLETE] Source Project: '{}'; Target Progect: '{}'".format(project_old, project_new))
     print("[INFO] TOTAL processing time: '{}' seconds.".format(time.time() - start_time))
     print("")
     
