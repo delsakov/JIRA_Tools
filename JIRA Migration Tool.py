@@ -12,6 +12,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.styles import Font, PatternFill
 from sys import exit
 import logging
+import io
 import traceback
 from tkinter import *
 from tkinter.filedialog import askopenfilename, askdirectory
@@ -31,7 +32,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '4.5'
+current_version = '4.6'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -200,6 +201,7 @@ replace_complete_statuses_flag = 1
 check_template_flag = 1
 skip_existing_issuetypes_validation_flag = 0
 clear_additional_configuration_flag = 0
+skip_recently_touched_issues = 0
 override_template_flag = 0
 remaining_previous = 0
 previous_JIRA_BASE_URL_NEW = ''
@@ -213,6 +215,7 @@ already_processed_json_importer_issues = set()
 already_processed_users = set()
 non_migrated_set = set()
 skipped_issuetypes = []
+processed_issuetypes = []
 total_processed = 0
 max_json_file_size = 10
 pool_size = 1
@@ -244,7 +247,9 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
     print("[START] Mapping file '{}' is opened for processing.".format(file_path))
     mapping_type = 1
     try:
-        df = load_workbook(file_path, read_only=True, data_only=True, keep_vba=True, keep_links=True)
+        with open(file_path, 'rb') as f:
+            in_mem_file = io.BytesIO(f.read())
+        df = load_workbook(in_mem_file, read_only=True, data_only=True, keep_vba=True, keep_links=True)
         excel_sheet_names = df.get_sheet_names()
         for excel_sheet_name in excel_sheet_names:
             value_mappings = {}
@@ -567,7 +572,7 @@ def get_transitions(project, jira_url, new=False):
 
 
 def get_hierarchy_config():
-    global sub_tasks, issuetypes_mappings, issue_details_new, skipped_issuetypes
+    global sub_tasks, issuetypes_mappings, issue_details_new, skipped_issuetypes, processed_issuetypes
     
     for issuetype, details in issuetypes_mappings.items():
         try:
@@ -579,11 +584,13 @@ def get_hierarchy_config():
                 issuetypes_mappings[issuetype]['hierarchy'] = '1'
             else:
                 issuetypes_mappings[issuetype]['hierarchy'] = '0'
+            processed_issuetypes.extend(details['issuetypes'])
         except:
             print("[WARNING] '{}' Issue Type(s) mapped in mapping file to '{}'. Skipping...".format(details['issuetypes'], issuetype))
             print("")
             skipped_issuetypes.extend(details['issuetypes'])
     
+    processed_issuetypes = list(set(processed_issuetypes))
     # Removing non-mapped items
     issuetypes_mappings.pop("", None)
 
@@ -976,8 +983,14 @@ def get_jira_connection():
     
     # Check SSL certification and use unsecured connection if not available
     try:
+        jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
+    except:
         try:
-            jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0)
+            jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0, options={'verify': False})
+            verify = False
+            print("")
+            print("[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.")
+            print("")
         except Exception as e:
             try:
                 if e.status_code == 503:
@@ -987,8 +1000,16 @@ def get_jira_connection():
                     exit()
             except:
                 pass
+    
+    try:
+        jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
+    except:
         try:
-            jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0)
+            jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0, options={'verify': False})
+            verify = False
+            print("")
+            print("[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.")
+            print("")
         except Exception as e:
             try:
                 if e.status_code == 503:
@@ -998,14 +1019,7 @@ def get_jira_connection():
                     exit()
             except:
                 pass
-    except:
-        jira1 = JIRA(JIRA_BASE_URL_OLD, max_retries=0, options={'verify': False})
-        jira2 = JIRA(JIRA_BASE_URL_NEW, max_retries=0, options={'verify': False})
-        verify = False
-        print("")
-        print("[WARNING] SSL verification failed. Further processing would be with skipping SSL verification -> insecure connection processing.")
-        print("")
-    
+
     try:
         try:
             jira_old = JIRA(JIRA_BASE_URL_OLD, auth=auth, logging=False, async_=True, async_workers=threads, max_retries=0, options={'verify': verify})
@@ -1085,7 +1099,7 @@ def get_team_id(team_name):
     def create_new_team(team_name):
         global teams, auth, headers, verify
         url_create = JIRA_BASE_URL_NEW + JIRA_team_api
-        body = eval('{"title": team_name_to_create, "shareable": "true"}')
+        body = eval('{"title": team_name, "shareable": "true"}')
         r = requests.post(url_create, json=body, auth=auth, headers=headers, verify=verify)
         team_id = int(r.content.decode('utf-8'))
         teams[team_name_to_check.upper().strip()] = team_id
@@ -1208,7 +1222,6 @@ def update_sprint(data):
 
 def delete_sprint(sprint_id):
     global auth, headers, JIRA_BASE_URL_NEW, JIRA_sprint_api, new_sprints, verify, verbose_logging
-    global max_retries, default_max_retries
     
     url = JIRA_BASE_URL_NEW + JIRA_sprint_api + str(sprint_id)
     try:
@@ -1224,7 +1237,7 @@ def delete_sprint(sprint_id):
 
 def refresh_sprints():
     global old_sprints, new_sprints, jira_old, jira_new, new_board_id, project_old, process_only_last_updated_date_flag
-    global last_updated_date
+    global last_updated_date, default_max_retries, max_retries
     
     sprint_names_for_delete = set()
     sprint_ids_for_delete = set()
@@ -1266,10 +1279,8 @@ def refresh_sprints():
     issues_for_delete = list(set(issues_for_delete))
     issues_for_delete = [get_shifted_key(i).replace(project_old, project_new) for i in issues_for_delete]
     print("[INFO] The number of issues to be re-loaded with changed Sprints: '{}'".format(len(issues_for_delete)))
-    for issue in issues_for_delete:
-        delete_issue(issue)
-    # max_retries = default_max_retries
-    # threads_processing(delete_issue, issues_for_delete)
+    max_retries = default_max_retries
+    threads_processing(delete_issue, issues_for_delete)
     
     for sprint in sprint_ids_for_delete:
         delete_sprint(sprint)
@@ -2436,25 +2447,34 @@ def get_dummy_parent(retry=False, retry_number=None):
         return
 
 
-def delete_issue(key):
-    global JIRA_BASE_URL_NEW, auth, threads, verify, verbose_logging, username, password
+def delete_issue(key, retry_number=None):
+    global auth, headers, JIRA_BASE_URL_NEW, JIRA_core_api, verify, verbose_logging, retry_number_allowed
+    global max_retries
+
+    if retry_number is None:
+        retry_number = retry_number_allowed
     
-    jira_auth = JIRA(JIRA_BASE_URL_NEW, auth=auth, async_workers=threads, max_retries=3, options={'verify': verify})
+    url = JIRA_BASE_URL_NEW + JIRA_core_api + str(key)
     try:
-        issue = jira_auth.issue(key)
-        try:
-            issue.delete(deleteSubtasks=True)
+        retry_number -= 1
+        r = requests.delete(url, auth=auth, headers=headers, verify=verify)
+        if str(r.status_code) == '400':
+            params = {"deleteSubtasks": "true"}
+            r = requests.delete(url, auth=auth, headers=headers, verify=verify, params=params)
+        if str(r.status_code) in ['204', '404']:
             return (0, key)
-        except:
-            try:
-                atlassian_jira_new = jira.Jira(JIRA_BASE_URL_NEW, username=username, password=password, verify_ssl=verify)
-                atlassian_jira_new.delete_issue(key)
-                return (0, key)
-            except Exception as e:
-                if verbose_logging == 1:
-                    print(traceback.format_exc())
-                return (1, key)
-    except:
+        elif retry_number > 0:
+            sleep(retry_number_allowed - retry_number)
+            return delete_issue(key, retry_number=retry_number)
+        else:
+            if max_retries == 1:
+                print("[ERROR] Issue '{}' can't be deleted. Skipped.".format(key))
+            return (1, key)
+    except Exception as e:
+        if max_retries == 1:
+            print("[ERROR] Issue '{}' can't be deleted due to: '{}'".format(key, e))
+        if verbose_logging == 1:
+            print(traceback.format_exc())
         return (0, key)
 
 
@@ -3330,7 +3350,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for v in value:
                 if hasattr(v, 'name'):
                     if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and check_user(v))
-                        or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
+                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     if issue_details_new[issuetype][new_field]['custom type'] == 'multiselect':
@@ -4656,24 +4676,34 @@ def find_min_id(key, jira, project):
 def migration_process(start_jira_key, max_processing_key, max_id, reprocess=False):
     global skip_migrated_flag, process_only_last_updated_date_flag, project_old, project_new, recently_updated_days
     global processing_jira_jql, issuetypes_mappings, recently_updated, last_updated_days_check, total_processed
-    global including_dependencies_flag, jira_old, jira_new, already_migrated_set, skipped_issuetypes
-    global migrated_issues_lst, multiple_json_data_processing
+    global including_dependencies_flag, jira_old, jira_new, already_migrated_set, skipped_issuetypes, issues_lst
+    global migrated_issues_lst, multiple_json_data_processing, processed_issuetypes, items_lst, failed_issues
+    global already_processed_json_importer_issues, skip_recently_touched_issues
+    
+    # Reset Default lists
+    items_lst, issues_lst = ({}, {})
+    already_migrated_set = set()
+    already_processed_json_importer_issues = set()
     
     # Check issues updated within the last number of days
     recently_updated = ''
     if last_updated_days_check == 1 and process_only_last_updated_date_flag == 0:
-        jql_recently_updated = "project = '{}' AND updated >= startOfDay(-{}) order by key ASC".format(project_old, recently_updated_days)
-        new_start_jira_key = jira_old.search_issues(jql_str=jql_recently_updated, maxResults=1, json_result=False)[0].key
+        try:
+            jql_recently_updated = "project = '{}' AND updated >= startOfDay(-{}) order by key ASC".format(project_old, recently_updated_days)
+            new_start_jira_key = jira_old.search_issues(jql_str=jql_recently_updated, maxResults=1, json_result=False)[0].key
+        except:
+            jql_recently_updated = "project = '{}' order by key ASC".format(project_old)
+            new_start_jira_key = jira_old.search_issues(jql_str=jql_recently_updated, maxResults=1, json_result=False)[0].key
         if int(start_jira_key.split('-')[1]) < int(new_start_jira_key.split('-')[1]):
             start_jira_key = new_start_jira_key
         if int(start_jira_key.split('-')[1]) > int(max_processing_key.split('-')[1]):
             start_jira_key = max_processing_key
-        recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
+        recently_updated = " AND updated >= startOfDay(-{}) AND issuetype in ({}) ".format(recently_updated_days, str(processed_issuetypes)[1:-1])
     if including_dependencies_flag == 1 and process_only_last_updated_date_flag == 0:
         max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
         start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
-        dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
-        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} ".format(project_old, start_jira_key, max_processing_key)
+        dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated)
+        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) ".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1])
         jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
                            "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
                            "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
@@ -4681,7 +4711,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
     
     # Check already migrated issues
-    if skip_migrated_flag == 1 and process_only_last_updated_date_flag == 0:
+    if (skip_migrated_flag == 1 and process_only_last_updated_date_flag == 0) or reprocess is True:
         start_already_migrated_time = time.time()
         already_migrated_set = set()
         try:
@@ -4697,17 +4727,23 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
                                        "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_new, project_new, jql_last_migrated, project_new, jql_last_migrated, project_new, dependencies_jql_parents_new, project_new, jql_last_migrated)
                 jql_last_migrated = jql_last_migrated + " OR ({}) ".format(jql_dependencies_new)
             get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
+            if reprocess is True:
+                already_migrated_set -= set(failed_issues)
+                already_migrated_set -= set(migrated_issues_lst)
             print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
             print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time))
             print("")
         except:
-            skip_migrated_flag = 0
+            pass
     
     # Add last updated issues to migration / update process
     if process_only_last_updated_date_flag == 1 and last_updated_date not in ['YYYY-MM-DD', '']:
         print("[START] Recently updated Issues loading was started from Source project. It could take some time... Please wait...")
         try:
-            jql_latest = "project = '{}' AND updated >= {} ".format(project_old, last_updated_date)
+            if skip_recently_touched_issues == 0:
+                jql_latest = "project = '{}' AND updated >= {} ".format(project_old, last_updated_date)
+            else:
+                jql_latest = "project = '{}' AND updated >= {} AND created >= {}".format(project_old, last_updated_date, recently_updated_days)
             get_issues_by_jql(jira_old, jql_latest, types=True, sprint=True, max_result=0)
             print("[END] Recently updated Issues have been successfully loaded for processing.")
             print("")
@@ -4735,33 +4771,35 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
         print("[INFO] Only last updated issues will be processed. Other options will be skipped.")
         print("")
     else:
-        if processing_jira_jql != '' and processing_jira_jql != "key in ()" and reprocess is False:
-            recently_updated_for_jql = ''
-            if last_updated_days_check == 1:
-                recently_updated_for_jql = " AND updated >= startOfDay(-{})".format(recently_updated_days)
-            if including_dependencies_flag == 1:
-                dependencies_jql = "project = '{}' AND key >= {} AND key < {} {} AND {}".format(project_old, start_jira_key, max_processing_key, recently_updated_for_jql, processing_jira_jql)
-                dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND {}".format(project_old, start_jira_key, max_processing_key, processing_jira_jql)
-                jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
-                                   "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
-                                   "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
-                                   "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_old, project_old, dependencies_jql, project_old, dependencies_jql, project_old, dependencies_jql_parents, project_old, dependencies_jql)
-                recently_updated_for_jql = recently_updated_for_jql + " OR ({}) ".format(jql_dependencies)
-            processing_jira_jql = str("project = {} AND (".format(project_old)) + str(processing_jira_jql) + ") {}".format(recently_updated_for_jql)
-            print("[INFO] The issues would be processed based on JQL: '{}'".format(processing_jira_jql))
-            jql_details = processing_jira_jql
-        elif reprocess is True:
-            jql_details = processing_jira_jql
+        if processing_jira_jql != '' and processing_jira_jql != "key in ()":
+            if reprocess is False:
+                recently_updated_for_jql = ''
+                if last_updated_days_check == 1:
+                    recently_updated_for_jql = " AND issuetype in ({}) AND updated >= startOfDay(-{})".format(str(processed_issuetypes)[1:-1], recently_updated_days)
+                if including_dependencies_flag == 1:
+                    dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {} AND {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated_for_jql, processing_jira_jql)
+                    dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) AND {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], processing_jira_jql)
+                    jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
+                                       "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
+                                       "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
+                                       "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_old, project_old, dependencies_jql, project_old, dependencies_jql, project_old, dependencies_jql_parents, project_old, dependencies_jql)
+                    recently_updated_for_jql = recently_updated_for_jql + " OR ({}) ".format(jql_dependencies)
+                processing_jira_jql = str("project = {} AND (".format(project_old)) + str(processing_jira_jql) + ") {}".format(recently_updated_for_jql)
+                print("[INFO] The issues would be processed based on JQL: '{}'".format(processing_jira_jql))
+                jql_details = processing_jira_jql
+            else:
+                jql_details = processing_jira_jql
         elif limit_migration_data != 0:
             jql_details = 'project = {} AND key >= {} AND key < {} {} order by key ASC'.format(project_old, start_jira_key, max_id, recently_updated)
             if start_jira_key == max_id:
                 jql_details = jql_details.replace('<', '<=')
         else:
-            jql_details = 'project = {} AND key >= {} {} order by key ASC'.format(project_old, start_jira_key, recently_updated)
+            jql_details = 'project = {} AND key >= {} AND issuetype in ({}) {} order by key ASC'.format(project_old, start_jira_key, str(processed_issuetypes)[1:-1], recently_updated)
         get_issues_by_jql(jira_old, jql=jql_details, types=True)
     
     # Calculating Minimal and Maximal issues to be migrated
     min_issue, max_issue = (0, 0)
+    failed_issues = []
     migrated_issues_lst = []
     for k, v in items_lst.items():
         if k not in skipped_issuetypes:
@@ -4786,6 +4824,19 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
     if verbose_logging == 1:
         print('[INFO] The list of migrated issues by type:', str(items_lst))
     
+    # Creating dummy parent
+    if len(sub_tasks) > 0:
+        for k in sub_tasks.keys():
+            try:
+                for task in issuetypes_mappings[k]['issuetypes']:
+                    if task in items_lst.keys():
+                        get_dummy_parent()
+                        break
+                if dummy_parent != '':
+                    break
+            except:
+                pass
+    
     # -----Metadata Migration-------
     # Creating JSON file for importing data
     if reprocess is False and multiple_json_data_processing == 1:
@@ -4799,7 +4850,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
                         if i_type in items_lst.keys():
                             for issue in items_lst[i_type]:
                                 json_process_issue(issue)
-    
+        
         print("[INFO] JSON Importer file(s) have been created/checked in '{}' seconds.".format(time.time() - start_placeholders_time))
         print("")
         print("[INFO] Please process JSON files - incrementally all parts in JIRA 'Projects -> Import External Project -> JSON' and continue migration process.")
@@ -4807,7 +4858,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
         os.system("pause")
         print("[INFO] Migration process will be continued.")
         print("")
-
+    
     # Main migration process starts here
     for i in range(4):
         for k, v in issuetypes_mappings.items():
@@ -4890,30 +4941,25 @@ def process_one_template(mapping_file):
     global process_partially_complete, dummy_parent, set_source_project_read_only, verify, already_migrated_set
     global previous_JIRA_BASE_URL_NEW, skip_new_process, old_transitions, old_statuses, status_mappings, teams
     global field_value_mappings, link_mappings, old_sub_tasks, new_transitions, new_statuses, new_issues_ids
-    global old_sprints, new_sprints, old_fields_ids_mapping, total_data, issues_lst, failed_issues
+    global old_sprints, new_sprints, old_fields_ids_mapping, total_data, issues_lst, failed_issues, processed_issuetypes
     global already_processed_json_importer_issues, already_processed_users, non_migrated_set, migrated_issues_lst
     
     start_time = time.time()
     
     # Set default values for each project
-    same_new_project = 0
     verify = True
     max_processing_key, recently_updated = ('', '')
     process_partially_complete, process_complete, processing_error, validation_template_error = (0, 0, 0, 0)
     dummy_parent, JIRA_BASE_URL_NEW, JIRA_BASE_URL_OLD, project_old, project_new = ('', '', '', '', '')
-    remaining_previous, skip_new_process, new_board_id = (0, 0, 0)
+    same_new_project, remaining_previous, skip_new_process, new_board_id = (0, 0, 0, 0)
     issue_details_old, old_transitions, old_statuses, issuetypes_mappings, fields_mappings = ({}, {}, {}, {}, {})
     status_mappings, field_value_mappings, link_mappings, sub_tasks, old_sub_tasks = ({}, {}, {}, {}, {})
-    old_sprints, new_sprints, old_fields_ids_mapping, total_data = ({}, {}, {}, {})
+    old_sprints, new_sprints, old_fields_ids_mapping, total_data, items_lst = ({}, {}, {}, {}, {})
     issue_details_new, new_transitions, new_statuses, new_issues_ids = ({}, {}, {}, {})
+    issues_lst, already_migrated_set, already_processed_json_importer_issues = (set(), set(), set())
+    already_processed_users, non_migrated_set, failed_issues, processed_issuetypes = (set(), set(), [], [])
     total_data["projects"] = []
     total_data["users"] = []
-    issues_lst = set()
-    already_migrated_set = set()
-    failed_issues = []
-    already_processed_json_importer_issues = set()
-    already_processed_users = set()
-    non_migrated_set = set()
     
     # Loading data from Excel
     read_excel(file_path=mapping_file.strip())
@@ -4998,7 +5044,7 @@ def process_one_template(mapping_file):
     get_hierarchy_config()
     
     # Calculating the highest level of available Key in OLD project
-    if process_only_last_updated_date_flag == 1:
+    if process_only_last_updated_date_flag == 1 or bulk_processing_flag == 1:
         limit_migration_data = 0
         start_jira_key = 1
     start_jira_key = project_old + '-' + str(start_jira_key)
@@ -5094,35 +5140,22 @@ def process_one_template(mapping_file):
         print("[INFO] Dummy Issues created in '{}' seconds.".format(time.time() - start_dummy_time))
         print("")
     
-    # Creating dummy parent
-    if len(sub_tasks) > 0:
-        for k in sub_tasks.keys():
-            try:
-                for task in issuetypes_mappings[k]['issuetypes']:
-                    if task in items_lst.keys():
-                        get_dummy_parent()
-                        break
-                if dummy_parent != '':
-                    break
-            except:
-                pass
-    
     # Main Migration block
     start_processing_time = time.time()
     migration_process(start_jira_key, max_processing_key, max_id)
     print("[INFO] Issues have been migrated in '{}' seconds.".format(time.time() - start_processing_time))
     print("")
-
+    
     # Re-try missed items
     start_retry_time = time.time()
     
     # Calculating total Number of Issues in OLD JIRA Project
     if process_only_last_updated_date_flag == 1:
-        recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
+        recently_updated = " AND issuetype in ({}) AND updated >= startOfDay(-{}) ".format(str(processed_issuetypes)[1:-1], recently_updated_days)
         max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
         start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
-        dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
-        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} ".format(project_old, start_jira_key, max_processing_key)
+        dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated)
+        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({})".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1])
         jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
                            "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
                            "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
@@ -5218,25 +5251,25 @@ def move_processed_template(folder, filename):
         if not os.path.exists(folder_path):
             os.mkdir(folder_path)
         new_file_path = os.path.join(folder_path, filename)
-        shutil.copy(old_file_path, new_file_path)
+        shutil.move(old_file_path, new_file_path)
     elif process_partially_complete == 1:
         folder_path = os.path.join(folder, process_partially_complete_folder)
         if not os.path.exists(folder_path):
             os.mkdir(folder_path)
         new_file_path = os.path.join(folder_path, filename)
-        shutil.copy(old_file_path, new_file_path)
+        shutil.move(old_file_path, new_file_path)
     elif validation_template_error == 1:
         folder_path = os.path.join(folder, validation_template_error_folder)
         if not os.path.exists(folder_path):
             os.mkdir(folder_path)
         new_file_path = os.path.join(folder_path, filename)
-        shutil.copy(old_file_path, new_file_path)
+        shutil.move(old_file_path, new_file_path)
     elif processing_error == 1:
         folder_path = os.path.join(folder, processing_error_folder)
         if not os.path.exists(folder_path):
             os.mkdir(folder_path)
         new_file_path = os.path.join(folder_path, filename)
-        shutil.copy(old_file_path, new_file_path)
+        shutil.move(old_file_path, new_file_path)
     return
 
 
@@ -5317,7 +5350,7 @@ def main_program():
                 file_path = os.path.join(mapping_file, filename)
                 process_one_template(file_path)
                 move_processed_template(mapping_file, filename)
-                print("____________________________________________________________________")
+                print("___________________________________________________________________________")
                 print("")
     else:
         process_one_template(mapping_file)
