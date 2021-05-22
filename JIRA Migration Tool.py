@@ -32,7 +32,7 @@ import concurrent.futures
 from itertools import zip_longest
 
 # Migration Tool properties
-current_version = '4.6'
+current_version = '4.7'
 config_file = 'config.json'
 
 # JIRA Default configuration
@@ -217,6 +217,7 @@ migrated_issues_lst = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
 processed_issues_set = set()
+teams_to_be_added_set = set()
 skipped_issuetypes = []
 processed_issuetypes = []
 total_processed = 0
@@ -837,7 +838,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
                         if name not in old_sprints.keys():
                             old_sprints[name] = {"id": sprint_id, "startDate": start_date, "endDate": end_date, "state": state.upper(), "originBoardName": board_name}
                 if (control is False and (types is None or issue.key in already_migrated_set)
-                        or (control is True and issue.key not in already_migrated_set)):
+                    or (control is True and issue.key not in already_migrated_set)):
                     continue
                 elif issue.fields.issuetype.name not in items_lst.keys():
                     items_lst[issue.fields.issuetype.name] = set()
@@ -1129,8 +1130,8 @@ def get_team_id(team_name):
     try:
         return str(teams[team_name_to_check.upper().strip()])
     except Exception as e:
+        print("Creating NEW Team: '{}'".format(team_name_to_check))
         if verbose_logging == 1:
-            print("Creating NEW Team: '{}'".format(team_name_to_check))
             print(e)
         return create_new_team(team_name_to_check)
 
@@ -2363,6 +2364,9 @@ def get_minfields_issuetype(issue_details, all=0):
     """Function for find out the issue type with minimal mandatory fields for Dummy issue creation."""
     min = 999
     i_types = {}
+    min_type = ''
+    min_fields = []
+
     for issuetype, fields in issue_details.items():
         mandatory_fields = set([field['id'] if field['required'] is True and field['id'] not in ['project', 'issuetype', 'summary'] else '' for field in fields.values()])
         if all == 0 and len(mandatory_fields) < min:
@@ -2382,7 +2386,7 @@ def get_minfields_issuetype(issue_details, all=0):
 def get_dummy_parent(retry=False, retry_number=None):
     global project_old, jira_new, jira_old, issue_details_new, issuetypes_mappings, dummy_parent
     global project_new, auth, headers, verify, json_importer_flag, max_number_for_dummy_parent_search, dummy_process
-    global start_jira_key, verbose_logging, retry_number_allowed
+    global start_jira_key, verbose_logging, retry_number_allowed, multiple_json_data_processing
     
     if dummy_parent != '':
         return
@@ -2392,7 +2396,6 @@ def get_dummy_parent(retry=False, retry_number=None):
     if retry is False:
         print("[START] Searching / creating Dummy Parent for orphan Sub-Tasks.")
     jql_new = "project = {} AND summary ~ DUMMY_PARENT".format(project_new)
-    # jql_new = "summary ~ DUMMY_PARENT"  # if one Dummy parent to be created - that line could be used instead
     parent = get_issues_by_jql(jira_new, jql_new, max_result=1)
     
     if parent is not None and parent != []:
@@ -2402,7 +2405,7 @@ def get_dummy_parent(retry=False, retry_number=None):
         print("")
         return
     
-    if json_importer_flag == 1:
+    if json_importer_flag == 1 or multiple_json_data_processing == 1:
         parent_key = None
         jql = "project = {}".format(project_old)
         total_old = jira_old.search_issues(jql, startAt=0, maxResults=1, json_result=True)['total']
@@ -2427,6 +2430,8 @@ def get_dummy_parent(retry=False, retry_number=None):
             max_processing_key = jira_new.search_issues(jql_str=jql_max, maxResults=1, json_result=False)[0].key
             parent_key = str(project_old + '-' + str(int(max_processing_key.split('-')[1]) + 1000))
         
+        # Calculating Issuetype for Dummy Parent. Default would be 'Story'
+        issuetype = 'Story'
         for k, v in issuetypes_mappings.items():
             if v['hierarchy'] in ['2', '3']:
                 issuetype = k
@@ -2959,12 +2964,30 @@ def update_issues_json(data):
     temp_data["links"] = []
 
 
+def check_new_team(old_issue, new_issuetype):
+    global teams, teams_to_be_added_set, fields_mappings, verbose_logging
+    
+    old_issuetype = old_issue.fields.issuetype.name
+    if 'Team' in fields_mappings[old_issuetype].keys():
+        for o_field in fields_mappings[old_issuetype]['Team']:
+            o_field_value = get_value(old_field=o_field, new_field='Team', old_issue=old_issue, new_issuetype=new_issuetype)
+            if o_field == 'Team':
+                o_field_value = get_team_name(o_field_value)
+            if o_field_value is not None and o_field_value:
+                o_field_value = o_field_value.strip()
+                if o_field_value.upper() not in teams.keys() and o_field_value not in teams_to_be_added_set:
+                    teams_to_be_added_set.add(o_field_value)
+                    if verbose_logging == 1:
+                        print("[INFO] New Team '{}' to be added in JIRA. From '{}' issue.".format(o_field_value, old_issue.key))
+                break
+
+
 def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new_issue=None, subtask=None):
     global auth, verify, project_old, project_new, headers, JIRA_BASE_URL_NEW, JIRA_imported_api, new_board_id
     global issuetypes_mappings, issue_details_old, migrate_sprints_check, migrate_comments_check, including_users_flag
     global migrate_statuses_check, migrate_metadata_check, already_processed_json_importer_issues, max_json_file_size
     global multiple_json_data_processing, total_data, already_processed_users, total_processed, jira_old
-    global replace_complete_statuses_flag, verbose_logging, old_fields_ids_mapping
+    global replace_complete_statuses_flag, verbose_logging, old_fields_ids_mapping, migrate_teams_check, teams
     
     def check_status(new_status, new_issue_type):
         global new_transitions, max_retries, default_max_retries
@@ -3035,6 +3058,10 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
         duration = isodate.duration_isoformat(datetime.timedelta(weeks=weeks, days=days, hours=hours, minutes=minutes, seconds=seconds))
         return duration
     
+    # Checking Portfolio Teams
+    if multiple_json_data_processing == 1 and migrate_teams_check == 1 and teams != {}:
+        check_new_team(old_issue, new_issue_type)
+    
     existed_histories = []
     existed_worklogs = []
     existed_comments = []
@@ -3055,7 +3082,7 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     users_set = set()
     if multiple_json_data_processing == 0:
         already_processed_users = set()
-        
+    
     # Checking the already existed data
     if new is False:
         for log in new_issue.raw['changelog']['histories']:
@@ -3206,14 +3233,14 @@ def migrate_change_history(old_issue, new_issue_type, new_status, new=False, new
     project_issue["key"] = get_shifted_key(old_issue.key.replace(project_old, project_new))
     project_issue["externalId"] = old_issue.key
     project_issue["issueType"] = new_issue_type
-
+    
     if subtask is not None:
         link = {"name": "sub-task-link",
                 "sourceId": old_issue.key,
                 "destinationId": old_issue.fields.parent.key
                 }
         data["links"] = [link]
-
+    
     try:
         user = {}
         user_name = old_issue.fields.reporter.name.upper()
@@ -3378,6 +3405,173 @@ def check_user(user):
         return False
 
 
+def get_new_value_from_mapping(old_value, field_name):
+    global field_value_mappings
+    try:
+        for new_value, old_values in field_value_mappings[field_name].items():
+            if type(old_value) == list:
+                for o_val in old_value:
+                    if str(o_val.strip()) in old_values or str(o_val.strip()) == new_value:
+                        return new_value
+            else:
+                if str(old_value.strip()) in old_values or str(old_value.strip()) == new_value:
+                    return new_value
+        return old_value
+    except:
+        return old_value
+
+
+def get_value(old_field, new_field, old_issue, new_issuetype):
+    global issue_details_old, issue_details_new
+    old_value = None
+    old_issuetype = old_issue.fields.issuetype.name
+
+    try:
+        value = eval('old_issue.fields.' + issue_details_old[old_issuetype][old_field]['id'])
+    except:
+        try:
+            value = eval('old_issue.fields.' + old_field.strip())
+        except:
+            value = None
+    if value is None and old_field not in ['Source Status', 'Source Issuetype']:
+        try:
+            temp = issue_details_old[old_issuetype][old_field]['type']
+        except:
+            if max_retries == default_max_retries:
+                print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Source Project. Please check for extra spaces missing.".format(old_field, old_issuetype))
+                print("[INFO] Available fields for the Source Project's '{}' issuetype are: '{}'".format(old_issuetype, issue_details_old[old_issuetype].keys()))
+        try:
+            temp = issue_details_new[new_issuetype][new_field]['type']
+        except:
+            if max_retries == default_max_retries:
+                print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Target Project. Please check for extra spaces missing.".format(new_field, new_issuetype))
+                print("[INFO] Available fields for the Target Project's '{}' issuetype are: '{}'".format(new_issuetype, issue_details_new[new_issuetype].keys()))
+    if issue_details_old[old_issuetype][old_field]['type'] == 'string' and issue_details_old[old_issuetype][old_field]['custom type'] == 'textfield' and issue_details_old[old_issuetype][old_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        try:
+            value = value.replace('\n', '').replace('\t', ' ')
+        except:
+            pass
+    elif issue_details_old[old_issuetype][old_field]['type'] == 'number' and issue_details_old[old_issuetype][old_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        try:
+            value = int(float(str(value).replace('\n', '').replace('\t', ' ')))
+        except:
+            pass
+    elif issue_details_old[old_issuetype][old_field]['custom type'] == 'labels' and issue_details_old[old_issuetype][old_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        value = get_str_from_lst(value)
+    elif issue_details_old[old_issuetype][old_field]['type'] == 'option-with-child' and value is not None and issue_details_old[old_issuetype][old_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        value_value = value.value
+        try:
+            value_child = value.child.value
+            mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
+        except:
+            value_child = None
+            mapped_value = value_value
+        if mapped_value is not None and value_child is not None:
+            try:
+                mapped_value_value = value.split(' --> ')[0]
+                mapped_value_child = value.split(' --> ')[1]
+            except:
+                mapped_value_value = value_value
+                mapped_value_child = value_child
+        else:
+            mapped_value_value = value_value
+            mapped_value_child = value_child
+        if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
+            if issue_details_new[new_issuetype][new_field]['validated'] is True:
+                for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                    if mapped_value_value == values[0] and mapped_value_child == values[1]:
+                        old_value = {"value": mapped_value_value, "child": {"value": mapped_value_child}}
+                        return old_value
+                    else:
+                        old_value = None
+            else:
+                old_value = {"value": value_value, "child": {"value": value_child}}
+        elif issue_details_new[new_issuetype][new_field]['type'] in ['option']:
+            if issue_details_new[new_issuetype][new_field]['validated'] is True:
+                for values in issue_details_new[new_issuetype][new_field]['allowed values']:
+                    if mapped_value_value == values:
+                        old_value = mapped_value_value
+                        return old_value
+                    if mapped_value_child == values:
+                        old_value = mapped_value_child
+                        return old_value
+                old_value = None
+                return old_value
+        else:
+            if value_value is not None and value_child is not None:
+                old_value = value_value + ' --> ' + value_child
+            elif value_child is not None:
+                old_value = value_value
+            else:
+                old_value = value_child
+    elif issue_details_old[old_issuetype][old_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
+        value = get_team_name(value)
+    old_value = value
+    if issue_details_old[old_issuetype][old_field]['type'] in ['string', 'number', 'array'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        old_value = value
+        if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
+            value = get_new_value_from_mapping(value, new_field)
+            try:
+                value_value = value.split(' --> ')[0]
+                value_child = value.split(' --> ')[1]
+                old_value = {"value": value_value, "child": {"value": value_child}}
+            except:
+                pass
+        elif issue_details_old[old_issuetype][old_field]['custom type'] in ['multiversion', 'multiuserpicker'] and old_value is not None:
+            old_value = [item for item in old_value]
+        elif issue_details_old[old_issuetype][old_field]['custom type'] in ['multicheckboxes'] and old_value is not None:
+            old_value = [item.value for item in old_value]
+        elif issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
+            old_value = str(old_value).replace(' ', '_')
+    elif issue_details_old[old_issuetype][old_field]['type'] in ['option', 'user'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
+        if issue_details_old[old_issuetype][old_field]['custom type'] in ['userpicker'] and old_value is not None:
+            try:
+                old_value = [item for item in old_value]
+            except:
+                old_value = [old_value]
+        else:
+            try:
+                old_value = value.value
+            except:
+                try:
+                    old_value = value.name
+                except:
+                    old_value = value
+    elif issue_details_new[new_issuetype][new_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
+        if new_issuetype in sub_tasks.keys():
+            return None
+        else:
+            team_value = None
+            try:
+                if type(old_value) != str:
+                    team_value = old_value[0]
+                else:
+                    team_value = old_value
+                if type(team_value) != str:
+                    try:
+                        team_value = old_value[0].value
+                    except:
+                        team_value = old_value[0].name
+            except:
+                try:
+                    team_value = old_value
+                    if type(team_value) != str:
+                        try:
+                            team_value = old_value.value
+                        except:
+                            team_value = old_value.name
+                except:
+                    old_value = None
+            if type(team_value) == list:
+                team_value = team_value[0]
+            team = '' if old_value is None else get_team_id(team_value)
+            return team
+    else:
+        return get_new_value_from_mapping(old_value, new_field)
+
+    return get_new_value_from_mapping(old_value, new_field)
+
+
 def update_new_issue_type(old_issue, new_issue, issuetype):
     """Function for Issue Metadata Update - the most complicated part of the migration"""
     global issue_details_old, issuetypes_mappings, sub_tasks, issue_details_new, create_remote_link_for_old_issue
@@ -3387,23 +3581,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     
     old_issuetype = old_issue.fields.issuetype.name
     
-    def get_new_value_from_mapping(old_value, field_name):
-        global field_value_mappings
-        try:
-            for new_value, old_values in field_value_mappings[field_name].items():
-                if type(old_value) == list:
-                    for o_val in old_value:
-                        if str(o_val.strip()) in old_values or str(o_val.strip()) == new_value:
-                            return new_value
-                else:
-                    if str(old_value.strip()) in old_values or str(old_value.strip()) == new_value:
-                        return new_value
-            return old_value
-        except:
-            return old_value
-    
-    def get_old_system_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype):
+    def get_old_system_field(new_field, old_issue=old_issue, new_issuetype=issuetype):
         global issue_details_old, new_sprints, issuetypes_mappings
+
+        old_issuetype = old_issue.fields.issuetype.name
         
         if new_field == 'Sprint':
             if issuetype in sub_tasks.keys() or issuetypes_mappings[issuetype]['hierarchy'] in ['0', '1']:
@@ -3443,7 +3624,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for v in value:
                 if hasattr(v, 'name'):
                     if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and check_user(v))
-                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
+                        or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     if issue_details_new[issuetype][new_field]['custom type'] == 'multiselect':
@@ -3491,159 +3672,12 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     value = value.replace('\n', ' ').replace('\t', ' ')
                 return value
     
-    def get_old_field(new_field, old_issue=old_issue, old_issuetype=old_issuetype, new_issuetype=issuetype, data_val={}):
+    def get_old_field(new_field, old_issue=old_issue, new_issuetype=issuetype, data_val={}):
         global fields_mappings, issue_details_old, issue_details_new, max_retries, default_max_retries
         value = None
         concatenated_value = None
         processed = False
-        
-        def get_value(field, new_field=new_field, old_issue=old_issue, old_issuetype=old_issuetype):
-            global issue_details_old, issue_details_new
-            old_value = None
-            
-            try:
-                value = eval('old_issue.fields.' + issue_details_old[old_issuetype][field]['id'])
-            except:
-                try:
-                    value = eval('old_issue.fields.' + field.strip())
-                except:
-                    value = None
-            if value is None and field not in ['Source Status', 'Source Issuetype']:
-                try:
-                    temp = issue_details_old[old_issuetype][field]['type']
-                except:
-                    if max_retries == default_max_retries:
-                        print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Source Project. Please check for extra spaces missing.".format(field, old_issuetype))
-                        print("[INFO] Available fields for the Source Project's '{}' issuetype are: '{}'".format(old_issuetype, issue_details_old[old_issuetype].keys()))
-                try:
-                    temp = issue_details_new[new_issuetype][new_field]['type']
-                except:
-                    if max_retries == default_max_retries:
-                        print("[ERROR] Field '{}' for '{}' Issue Type in Mapping Template can't be found in Target Project. Please check for extra spaces missing.".format(new_field, new_issuetype))
-                        print("[INFO] Available fields for the Target Project's '{}' issuetype are: '{}'".format(new_issuetype, issue_details_new[new_issuetype].keys()))
-            if issue_details_old[old_issuetype][field]['type'] == 'string' and issue_details_old[old_issuetype][field]['custom type'] == 'textfield' and issue_details_old[old_issuetype][field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                try:
-                    value = value.replace('\n', '').replace('\t', ' ')
-                except:
-                    pass
-            elif issue_details_old[old_issuetype][field]['type'] == 'number' and issue_details_old[old_issuetype][field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                try:
-                    value = int(float(str(value).replace('\n', '').replace('\t', ' ')))
-                except:
-                    pass
-            elif issue_details_old[old_issuetype][field]['custom type'] == 'labels' and issue_details_old[old_issuetype][field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                value = get_str_from_lst(value)
-            elif issue_details_old[old_issuetype][field]['type'] == 'option-with-child' and value is not None and issue_details_old[old_issuetype][field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                value_value = value.value
-                try:
-                    value_child = value.child.value
-                    mapped_value = get_new_value_from_mapping(value_value + ' --> ' + value_child, new_field)
-                except:
-                    value_child = None
-                    mapped_value = value_value
-                if mapped_value is not None and value_child is not None:
-                    try:
-                        mapped_value_value = value.split(' --> ')[0]
-                        mapped_value_child = value.split(' --> ')[1]
-                    except:
-                        mapped_value_value = value_value
-                        mapped_value_child = value_child
-                else:
-                    mapped_value_value = value_value
-                    mapped_value_child = value_child
-                if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
-                    if issue_details_new[new_issuetype][new_field]['validated'] is True:
-                        for values in issue_details_new[new_issuetype][new_field]['allowed values']:
-                            if mapped_value_value == values[0] and mapped_value_child == values[1]:
-                                old_value = {"value": mapped_value_value, "child": {"value": mapped_value_child}}
-                                return old_value
-                            else:
-                                old_value = None
-                    else:
-                        old_value = {"value": value_value, "child": {"value": value_child}}
-                elif issue_details_new[new_issuetype][new_field]['type'] in ['option']:
-                    if issue_details_new[new_issuetype][new_field]['validated'] is True:
-                        for values in issue_details_new[new_issuetype][new_field]['allowed values']:
-                            if mapped_value_value == values:
-                                old_value = mapped_value_value
-                                return old_value
-                            if mapped_value_child == values:
-                                old_value = mapped_value_child
-                                return old_value
-                        old_value = None
-                        return old_value
-                else:
-                    if value_value is not None and value_child is not None:
-                        old_value = value_value + ' --> ' + value_child
-                    elif value_child is not None:
-                        old_value = value_value
-                    else:
-                        old_value = value_child
-            elif issue_details_old[old_issuetype][field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
-                value = get_team_name(value)
-            old_value = value
-            if issue_details_old[old_issuetype][field]['type'] in ['string', 'number', 'array'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                old_value = value
-                if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
-                    value = get_new_value_from_mapping(value, new_field)
-                    try:
-                        value_value = value.split(' --> ')[0]
-                        value_child = value.split(' --> ')[1]
-                        old_value = {"value": value_value, "child": {"value": value_child}}
-                    except:
-                        pass
-                elif issue_details_old[old_issuetype][field]['custom type'] in ['multiversion', 'multiuserpicker'] and old_value is not None:
-                    old_value = [item for item in old_value]
-                elif issue_details_old[old_issuetype][field]['custom type'] in ['multicheckboxes'] and old_value is not None:
-                    old_value = [item.value for item in old_value]
-                elif issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
-                    old_value = str(old_value).replace(' ', '_')
-            elif issue_details_old[old_issuetype][field]['type'] in ['option', 'user'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
-                if issue_details_old[old_issuetype][field]['custom type'] in ['userpicker'] and old_value is not None:
-                    try:
-                        old_value = [item for item in old_value]
-                    except:
-                        old_value = [old_value]
-                else:
-                    try:
-                        old_value = value.value
-                    except:
-                        try:
-                            old_value = value.name
-                        except:
-                            old_value = value
-            elif issue_details_new[new_issuetype][new_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
-                if issuetype in sub_tasks.keys():
-                    return None
-                else:
-                    try:
-                        if type(old_value) != str:
-                            team_value = old_value[0]
-                        else:
-                            team_value = old_value
-                        if type(team_value) != str:
-                            try:
-                                team_value = old_value[0].value
-                            except:
-                                team_value = old_value[0].name
-                    except:
-                        try:
-                            team_value = old_value
-                            if type(team_value) != str:
-                                try:
-                                    team_value = old_value.value
-                                except:
-                                    team_value = old_value.name
-                        except:
-                            old_value = None
-                    if type(team_value) == list:
-                        team_value = team_value[0]
-                    team = '' if old_value is None else get_team_id(team_value)
-                    return team
-            else:
-                return get_new_value_from_mapping(old_value, new_field)
-            
-            return get_new_value_from_mapping(old_value, new_field)
+        old_issuetype = old_issue.fields.issuetype.name
         
         old_field = ''
         try:
@@ -3702,14 +3736,14 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 else:
                     try:
                         try:
-                            calculated_value = [i.displayName for i in get_value(o_field)]
+                            calculated_value = [i.displayName for i in get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)]
                         except:
                             try:
-                                calculated_value = [i.name for i in get_value(o_field)]
+                                calculated_value = [i.name for i in get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)]
                             except:
-                                calculated_value = [i.value for i in get_value(o_field)]
+                                calculated_value = [i.value for i in get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)]
                     except:
-                        calculated_value = get_value(o_field)
+                        calculated_value = get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)
                     added_value = '' if calculated_value is None else get_str_from_lst(calculated_value)
                 if new_field == 'Description':
                     concatenated_value += '' if added_value == '' else '\r\n *[' + o_field + ']:* ' + added_value
@@ -3719,10 +3753,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                 if concatenated_value is None:
                     concatenated_value = 0
                 try:
-                    added_value = int(get_str_from_lst(re.findall(r"\d*", get_value(o_field))))
+                    added_value = int(get_str_from_lst(re.findall(r"\d*", get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype))))
                 except:
                     added_value = 0
-                concatenated_value += 0 if get_value(o_field) is None else added_value
+                concatenated_value += 0 if get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype) is None else added_value
             elif issue_details_new[new_issuetype][new_field]['type'] == 'array':
                 if concatenated_value is None:
                     if new_field != 'Labels' or (new_field == 'Labels' and 'labels' in data_val.keys() and data_val['labels'] is None):
@@ -3735,7 +3769,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     if processed is True:
                         label_add_value = o_field_val
                     else:
-                        label_add_value = get_value(o_field)
+                        label_add_value = get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)
                     if label_add_value is not None and type(label_add_value) == list:
                         concatenated_value.extend([i.replace(' ', '_').replace('\n', '_').replace('\t', '_') for i in label_add_value])
                     else:
@@ -3751,26 +3785,26 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                         value = str(o_field_val).replace(' ', '_').replace('\n', '_').replace('\t', '_')
                     else:
                         try:
-                            values = get_value(o_field).split(',')
+                            values = get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype).split(',')
                             for val in values:
                                 value = str(val).strip().replace(' ', '_').replace('\n', '_').replace('\t', '_')
                                 if value not in get_lm_field_values(new_field, new_issuetype):
                                     add_lm_field_value(value, new_field, new_issuetype)
                                 concatenated_value.append(value)
                         except:
-                            value = get_value(o_field)
+                            value = get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)
                             if value is not None:
                                 concatenated_value.append(value)
                 elif issue_details_new[new_issuetype][new_field]['custom type'] == 'multiuserpicker':
-                    if get_value(o_field) is not None:
-                        if type(get_value(o_field)) == list:
-                            concatenated_value.extend(get_value(o_field))
+                    if get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype) is not None:
+                        if type(get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)) == list:
+                            concatenated_value.extend(get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype))
                         else:
-                            concatenated_value.append(get_value(o_field))
+                            concatenated_value.append(get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype))
                 else:
-                    concatenated_value.append('' if get_value(o_field) is None else str(get_value(o_field)))
+                    concatenated_value.append('' if get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype) is None else str(get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)))
             elif issue_details_new[new_issuetype][new_field]['type'] == 'option':
-                value = str(get_value(o_field))
+                value = str(get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype))
                 if issue_details_new[new_issuetype][new_field]['validated'] is True:
                     for values in issue_details_new[new_issuetype][new_field]['allowed values']:
                         if value == values:
@@ -3778,7 +3812,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                             return existing_value
                 concatenated_value = value
             else:
-                value = get_value(o_field)
+                value = get_value(o_field, new_field=new_field, old_issue=old_issue, new_issuetype=issuetype)
                 if str(value) != '':
                     return value
         value = concatenated_value
@@ -3903,10 +3937,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     if old_issuetype in fields_mappings.keys():
         for n_field in fields_mappings[old_issuetype].keys():
             if ((issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team'])
-                    or n_field == ''
-                    or n_field not in issue_details_new[issuetype].keys()
-                    or n_field in jira_system_skip_fields
-                    or (n_field in jira_system_fields and n_field not in additional_mapping_fields)):
+                or n_field == ''
+                or n_field not in issue_details_new[issuetype].keys()
+                or n_field in jira_system_skip_fields
+                or (n_field in jira_system_fields and n_field not in additional_mapping_fields)):
                 continue
             data_value = None
             o_field_value = get_old_field(n_field, data_val=data_val)
@@ -4202,9 +4236,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             existing_parent_link = None
         if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and parent_link_id_to_add is not None:
             try:
-                parent_issue = jira_old.issue(parent_link_id_to_add.replace(project_new, project_old))
+                parent_issue = jira_old.issue(get_shifted_key(parent_link_id_to_add.replace(project_new, project_old), reversed=True))
                 existent_parent = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
-                if parent_issue.key == existent_parent.replace(project_new, project_old):
+                if parent_issue.key == get_shifted_key(existent_parent.replace(project_new, project_old), reversed=True):
                     data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
                 elif parent_link_id_to_add != existent_parent and existent_parent is not None:
                     if json_importer_flag == 1:
@@ -4803,7 +4837,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
     global processing_jira_jql, issuetypes_mappings, recently_updated, last_updated_days_check, total_processed
     global including_dependencies_flag, jira_old, jira_new, already_migrated_set, skipped_issuetypes, issues_lst
     global migrated_issues_lst, multiple_json_data_processing, processed_issuetypes, items_lst, failed_issues
-    global processed_issues_set, total_data, max_retries, override_template_flag
+    global processed_issues_set, total_data, max_retries, override_template_flag, teams_to_be_added_set
     global already_processed_json_importer_issues, max_json_file_size, control_logic_flag
     
     # Check issues updated within the last number of days
@@ -4844,7 +4878,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
     if skip_migrated_flag == 1 or force_update_flag == 1 or including_dependencies_flag == 1 or process_only_last_updated_date_flag == 1:
         jql_non_migrated = "project = {} AND labels = MIGRATION_NOT_COMPLETE".format(project_new)
         get_issues_by_jql(jira_new, jql=jql_non_migrated, types=True, non_migrated=True)
-        
+    
     # Check already migrated issues
     if skip_migrated_flag == 1 and process_only_last_updated_date_flag == 0:
         start_already_migrated_time = time.time()
@@ -4860,11 +4894,11 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             print("")
         except:
             pass
-
+    
     if reprocess is True:
         already_migrated_set -= failed_issues
         already_migrated_set |= processed_issues_set
-
+    
     # Add last updated issues to migration / update process
     if process_only_last_updated_date_flag == 1 and last_updated_date not in ['YYYY-MM-DD', '']:
         print("[START] Recently updated Issues loading was started from Source project. It could take some time... Please wait...")
@@ -5032,6 +5066,13 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
         print("")
         print("[INFO] Please process JSON files - incrementally all parts in JIRA 'Projects -> Import External Project -> JSON' and continue migration process.")
         print("")
+        if len(teams_to_be_added_set) > 0:
+            print("[START] Teams would be checked for existence in Target JIRA instance.")
+            if verbose_logging == 1:
+                print("[INFO] Teams to be added: '{}'".format(list(teams_to_be_added_set)))
+            for team_name in teams_to_be_added_set:
+                team_id = get_team_id(team_name)
+            print("[END] Teams checks have been completed. Please continue migration process after all JSON files are processed.")
         os.system("pause")
         print("[INFO] Migration process will be continued.")
         print("")
@@ -5150,7 +5191,7 @@ def process_one_template(mapping_file):
     total_data["projects"] = [{"key": project_new, "issues": []}]
     total_data["users"] = []
     total_data["links"] = []
-
+    
     # Loading data from default configuration file
     if os.path.exists(default_configuration_file) is True or default_configuration_file != '':
         read_default_mappings_excel(file_path=default_configuration_file.strip())
@@ -6627,15 +6668,15 @@ if __name__ == "__main__":
     days = tk.Entry(main, width=5, textvariable=recently_updated_days)
     days.insert(END, recently_updated_days)
     days.grid(row=27, column=1, pady=0, sticky=W, columnspan=3, padx=24)
-
+    
     control_logic = IntVar(value=control_logic_flag)
     Checkbutton(main, text="Apply Control logic for recently touched issues.", font=("Helvetica", 9, "italic"), variable=control_logic).grid(row=26, column=0, sticky=W, padx=20, columnspan=3, pady=0)
     control_logic.trace('w', change_control_logic)
-
+    
     retry_logic = IntVar(value=retry_logic_flag)
     Checkbutton(main, text="Re-try all failed issues later.", font=("Helvetica", 9, "italic"), variable=retry_logic).grid(row=26, column=1, sticky=W, padx=70, columnspan=3, pady=0)
     retry_logic.trace('w', change_retry_logic)
-
+    
     process_dependencies = IntVar(value=including_dependencies_flag)
     Checkbutton(main, text="Including dependencies (Parents / Sub-tasks / Links).", font=("Helvetica", 9, "italic"), variable=process_dependencies).grid(row=27, column=1, sticky=W, padx=55, columnspan=3, pady=0)
     process_dependencies.trace('w', change_dependencies)
