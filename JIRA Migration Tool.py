@@ -44,7 +44,7 @@ template_project = ''
 new_project_name = ''
 team_project_prefix = ''
 dummy_parent = ''
-read_only_scheme_name = 'BROWSE-ONLY'
+read_only_scheme_name = 'ReadOnly'
 verify = True
 max_number_for_dummy_parent_search = 10000
 retry_number_allowed = 12
@@ -89,7 +89,7 @@ project_tab_color = '32CD32'  # Green
 mandatory_tab_color = 'FA8072'  # Red
 optional_tab_color = 'F4A460'  # Amber
 mandatory_template_tabs = ['Project', 'Issuetypes', 'Fields', 'Statuses', 'Priority', 'Links']
-hide_tabs = True
+hide_tabs = False
 zoom_scale = 100
 wb = Workbook()
 default_validation = {}
@@ -212,7 +212,7 @@ previous_JIRA_BASE_URL_NEW = ''
 # Required for creation JSON file - total_data have to be dumped in JSON file for processing from UI.
 multiple_json_data_processing = 0
 json_file_part_num = 1
-failed_issues = []
+failed_issues = set()
 migrated_issues_lst = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
@@ -1927,7 +1927,7 @@ def process_issue(key, reprocess=False):
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                     if status == 'SKIP' and key not in failed_issues:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                 else:
                     parent_calculated = get_parent_for_subtask(old_issue, issue_type)
@@ -1938,12 +1938,12 @@ def process_issue(key, reprocess=False):
                     if force_update_flag == 1 or new_issue.fields.status.name.upper() != new_status.upper():
                         status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue, subtask=True)
                         if status == 'SKIP' and key not in failed_issues:
-                            failed_issues.append(key)
+                            failed_issues.add(key)
                             return (1, key)
             elif force_update_flag == 1 and json_importer_flag == 1:
                 status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                 if status == 'SKIP' and  key not in failed_issues:
-                    failed_issues.append(key)
+                    failed_issues.add(key)
                     return (1, key)
         except Exception as e:
             if json_importer_flag == 0:
@@ -1956,11 +1956,11 @@ def process_issue(key, reprocess=False):
                 if new_issue_type in sub_tasks.keys():
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True, subtask=True)
                     if status == 'SKIP' and key not in failed_issues:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                     new_issue = get_new_issue_after_json(new_issue_key)
                     if new_issue is None:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                     parent_calculated = get_parent_for_subtask(old_issue, issue_type)
                     parent = None if parent_calculated is None else parent_calculated
@@ -1993,25 +1993,25 @@ def process_issue(key, reprocess=False):
                     convert_to_subtask(parent, new_issue, sub_tasks[new_issue_type])
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                     if status == 'SKIP' and key not in failed_issues:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                     new_issue = get_new_issue_after_json(new_issue_key)
                     if new_issue is None:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                 else:
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=True)
                     if status == 'SKIP' and key not in failed_issues:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
                     new_issue = get_new_issue_after_json(new_issue_key)
                     if new_issue is None:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         print("[ERROR] Issue '{}' can't be created. Details: '{}'".format(new_issue_key, e))
                         return(1, key)
                     status = update_issue_json(old_issue, new_issue_type, new_status, new=False, new_issue=new_issue)
                     if status == 'SKIP' and key not in failed_issues:
-                        failed_issues.append(key)
+                        failed_issues.add(key)
                         return (1, key)
         if migrate_comments_check == 1 and json_importer_flag == 0 and multiple_json_data_processing == 0 and new_issue is not None:
             migrate_comments(old_issue, new_issue)
@@ -3440,7 +3440,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for v in value:
                 if hasattr(v, 'name'):
                     if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and check_user(v))
-                        or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
+                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     if issue_details_new[issuetype][new_field]['custom type'] == 'multiselect':
@@ -4326,6 +4326,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             except:
                 print("[ERROR] Exception for '{}' is '{}'".format(new_issue.key, e))
                 print("[INFO] The details for update: '{}'".format(data_val))
+                failed_issues.add(old_issue.key)
                 if verbose_logging == 1:
                     print(traceback.format_exc())
 
@@ -4867,7 +4868,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             pass
 
     if reprocess is True:
-        already_migrated_set -= set(failed_issues)
+        already_migrated_set -= failed_issues
         already_migrated_set |= processed_issues_set
 
     # Add last updated issues to migration / update process
@@ -4964,7 +4965,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
     
     # Calculating Minimal and Maximal issues to be migrated
     min_issue, max_issue = (0, 0)
-    failed_issues = []
+    failed_issues = set()
     migrated_issues_lst = []
     try:
         for k, v in items_lst.items():
@@ -5134,7 +5135,7 @@ def process_one_template(mapping_file):
     old_sprints, new_sprints, old_fields_ids_mapping, total_data, items_lst = ({}, {}, {}, {}, {})
     issue_details_new, new_transitions, new_statuses, new_issues_ids, skipped_issuetypes = ({}, {}, {}, {}, [])
     issues_lst, already_migrated_set, already_processed_json_importer_issues = (set(), set(), set())
-    already_processed_users, non_migrated_set, failed_issues, processed_issuetypes = (set(), set(), [], [])
+    already_processed_users, non_migrated_set, failed_issues, processed_issuetypes = (set(), set(), set(), [])
     
     # Loading data from Excel
     read_excel(file_path=mapping_file.strip())
@@ -5363,8 +5364,8 @@ def process_one_template(mapping_file):
         jql_non_completed_new = "project = '{}' AND labels in ('MIGRATION_NOT_COMPLETE') ".format(project_new)
         non_completed_new = jira_new.search_issues(jql_non_completed_new, startAt=0, maxResults=1, json_result=True)['total']
         
-        failed_issues = set(migrated_issues_lst) | set(failed_issues)
-        failed_issues = set(failed_issues) - set(processed_issues_set)
+        failed_issues = set(migrated_issues_lst) | failed_issues
+        failed_issues = failed_issues - set(processed_issues_set)
         
         if int(total_old) <= int(total_new) and (int(non_completed_new) == 0 and len(failed_issues) == 0):
             # Update and Close Sprints - after migration of issues are done
