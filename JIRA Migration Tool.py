@@ -201,7 +201,7 @@ including_users_flag = 1
 process_only_last_updated_date_flag = 0
 replace_complete_statuses_flag = 1
 check_template_flag = 1
-skip_existing_issuetypes_validation_flag = 0
+skip_existing_issuetypes_validation_flag = 1
 clear_additional_configuration_flag = 0
 control_logic_flag = 0
 retry_logic_flag = 1
@@ -217,7 +217,6 @@ migrated_issues_lst = []
 already_processed_json_importer_issues = set()
 already_processed_users = set()
 processed_issues_set = set()
-non_migrated_set = set()
 skipped_issuetypes = []
 processed_issuetypes = []
 total_processed = 0
@@ -800,7 +799,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
     
     def sprint_update(param):
         global items_lst, old_sprints, issue_details_old, already_migrated_set, JIRA_board_api, headers
-        global non_migrated_set, old_fields_ids_mapping
+        global old_fields_ids_mapping
         
         jira, types, non_migrated, jql, control, start_idx, max_res = param
         try:
@@ -837,7 +836,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
                                     pass
                         if name not in old_sprints.keys():
                             old_sprints[name] = {"id": sprint_id, "startDate": start_date, "endDate": end_date, "state": state.upper(), "originBoardName": board_name}
-                if (control is False and (types is None or (issue.key in already_migrated_set and issue.key not in non_migrated_set))
+                if (control is False and (types is None or issue.key in already_migrated_set)
                         or (control is True and issue.key not in already_migrated_set)):
                     continue
                 elif issue.fields.issuetype.name not in items_lst.keys():
@@ -850,7 +849,7 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
             return (1, param)
     
     def issue_list_update(param):
-        global items_lst, already_migrated_set, non_migrated_set
+        global items_lst, already_migrated_set, jira_old
         
         jira, types, non_migrated, jql, control, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False, fields='issuetype')
@@ -858,8 +857,12 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
         try:
             for issue in issues:
                 if non_migrated is True:
-                    non_migrated_set.add(get_shifted_key(issue.key.replace(project_new, project_old), reversed=True))
-                elif (control is False and issue.key in already_migrated_set and issue.key not in non_migrated_set) or (control is True and issue.key not in already_migrated_set):
+                    non_migrated_key = get_shifted_key(issue.key.replace(project_new, project_old), reversed=True)
+                    non_migrated_issue = jira_old.issue(non_migrated_key)
+                    if non_migrated_issue.fields.issuetype.name not in items_lst.keys():
+                        items_lst[non_migrated_issue.fields.issuetype.name] = set()
+                    items_lst[non_migrated_issue.fields.issuetype.name].add(non_migrated_key)
+                elif (control is False and issue.key in already_migrated_set) or (control is True and issue.key not in already_migrated_set):
                     continue
                 elif issue.fields.issuetype.name not in items_lst.keys():
                     items_lst[issue.fields.issuetype.name] = set()
@@ -884,13 +887,13 @@ def get_issues_by_jql(jira, jql, types=None, sprint=None, migrated=None, non_mig
             return (1, param)
     
     def issue_list_upload(param):
-        global issues_lst, already_migrated_set, non_migrated_set
+        global issues_lst, already_migrated_set
         
         jira, types, non_migrated, jql, start_idx, max_res = param
         issues = jira.search_issues(jql_str=jql, startAt=start_idx, maxResults=max_res, json_result=False)
         try:
             for issue in issues:
-                if issue.key in already_migrated_set and issue.key not in non_migrated_set:
+                if issue.key in already_migrated_set:
                     continue
                 issues_lst.add(issue.key)
             return (0, param)
@@ -4800,7 +4803,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
     global processing_jira_jql, issuetypes_mappings, recently_updated, last_updated_days_check, total_processed
     global including_dependencies_flag, jira_old, jira_new, already_migrated_set, skipped_issuetypes, issues_lst
     global migrated_issues_lst, multiple_json_data_processing, processed_issuetypes, items_lst, failed_issues
-    global processed_issues_set, non_migrated_set, total_data, max_retries
+    global processed_issues_set, total_data, max_retries, override_template_flag
     global already_processed_json_importer_issues, max_json_file_size, control_logic_flag
     
     # Check issues updated within the last number of days
@@ -4816,28 +4819,26 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             start_jira_key = new_start_jira_key
         if int(start_jira_key.split('-')[1]) > int(max_processing_key.split('-')[1]):
             start_jira_key = max_processing_key
-        if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-            recently_updated = " AND updated >= startOfDay(-{}) AND issuetype in ({}) ".format(recently_updated_days, str(processed_issuetypes)[1:-1])
-        elif len(skipped_issuetypes) == 0:
-            recently_updated = " AND updated >= startOfDay(-{}) ".format(recently_updated_days)
-        else:
-            recently_updated = " AND updated >= startOfDay(-{}) AND issuetype not in ({}) ".format(recently_updated_days, str(skipped_issuetypes)[1:-1])
+        recently_updated = " AND updated >= startOfDay(-{})".format(recently_updated_days)
+        if including_dependencies_flag == 0:
+            if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+                recently_updated = " AND updated >= startOfDay(-{}) AND issuetype in ({})".format(recently_updated_days, str(processed_issuetypes)[1:-1])
+            elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+                recently_updated = " AND updated >= startOfDay(-{})".format(recently_updated_days)
+            else:
+                recently_updated = " AND updated >= startOfDay(-{}) AND issuetype not in ({})".format(recently_updated_days, str(skipped_issuetypes)[1:-1])
     if including_dependencies_flag == 1 and process_only_last_updated_date_flag == 0:
         max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
         start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
-        if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-            dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) ".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1])
-        elif len(skipped_issuetypes) == 0:
-            dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} ".format(project_old, start_jira_key, max_processing_key)
+        dependencies_jql = " key >= {} AND key < {} {}".format(start_jira_key, max_processing_key, recently_updated)
+        dependencies_jql_parents = " key >= {} AND key < {}".format(start_jira_key, max_processing_key)
+        if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+            dependency_main_jql = "project = '{}' AND issuetype in ({})".format(project_old, str(processed_issuetypes)[1:-1])
+        elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+            dependency_main_jql = "project = '{}'".format(project_old)
         else:
-            dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype not in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1], recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype not in ({}) ".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1])
-        jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
-                           "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
-                           "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
-                           "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_old, project_old, dependencies_jql, project_old, dependencies_jql, project_old, dependencies_jql_parents, project_old, dependencies_jql)
+            dependency_main_jql = "project = '{}' AND issuetype not in ({})".format(project_old, str(skipped_issuetypes)[1:-1])
+        jql_dependencies = "{} AND (issueFunction in epicsOf(\"{}\") OR issueFunction in subtasksOf(\"{}\") OR issueFunction in parentsOf(\"{}\") OR issueFunction in linkedIssuesOf(\"{}\"))".format(dependency_main_jql, dependencies_jql, dependencies_jql, dependencies_jql_parents, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
     
     if skip_migrated_flag == 1 or force_update_flag == 1 or including_dependencies_flag == 1 or process_only_last_updated_date_flag == 1:
@@ -4852,14 +4853,7 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             start_new_jira_key = find_min_id(get_shifted_key(start_jira_key.replace(project_old, project_new)), jira_new, project_new)
             max_new_processing_key = find_max_id(get_shifted_key(max_processing_key.replace(project_old, project_new)), jira_new, project_new)
             print("[START] Checking for already migrated issues. They will be skipped.")
-            jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR (labels is EMPTY AND key >= {} AND key <= {} ))".format(project_new, start_new_jira_key, max_new_processing_key)
-            if including_dependencies_flag == 1:
-                dependencies_jql_parents_new = "project = '{}' AND key >= {} AND key < {} ".format(project_new, start_new_jira_key, max_new_processing_key)
-                jql_dependencies_new = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
-                                       "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
-                                       "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
-                                       "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_new, project_new, jql_last_migrated, project_new, jql_last_migrated, project_new, dependencies_jql_parents_new, project_new, jql_last_migrated)
-                jql_last_migrated = jql_last_migrated + " OR ({}) ".format(jql_dependencies_new)
+            jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {}".format(project_new, start_new_jira_key, max_new_processing_key)
             get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
             print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
             print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time))
@@ -4923,28 +4917,28 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
         if processing_jira_jql != '' and processing_jira_jql != "key in ()":
             if reprocess is False:
                 recently_updated_for_jql = ''
-                if last_updated_days_check == 1:
-                    if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-                        recently_updated_for_jql = " AND issuetype in ({}) AND updated >= startOfDay(-{})".format(str(processed_issuetypes)[1:-1], recently_updated_days)
-                    elif len(skipped_issuetypes) == 0:
-                        recently_updated_for_jql = " AND updated >= startOfDay(-{})".format(recently_updated_days)
-                    else:
-                        recently_updated_for_jql = " AND issuetype not in ({}) AND updated >= startOfDay(-{})".format(str(skipped_issuetypes)[1:-1], recently_updated_days)
+                jql_dependencies = "project = {}".format(project_old)
                 if including_dependencies_flag == 1:
-                    if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-                        dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {} AND {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated_for_jql, processing_jira_jql)
-                        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) AND {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], processing_jira_jql)
-                    elif len(skipped_issuetypes) == 0:
-                        dependencies_jql = "project = '{}' AND key >= {} AND key < {} {} AND {}".format(project_old, start_jira_key, max_processing_key, recently_updated_for_jql, processing_jira_jql)
-                        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND {}".format(project_old, start_jira_key, max_processing_key, processing_jira_jql)
+                    dependencies_jql = " key >= {} AND key < {} {}".format(start_jira_key, max_processing_key, recently_updated)
+                    dependencies_jql_parents = " key >= {} AND key < {}".format(start_jira_key, max_processing_key)
+                    if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+                        dependency_main_jql = "project = '{}' AND issuetype in ({})".format(project_old, str(processed_issuetypes)[1:-1])
+                    elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+                        dependency_main_jql = "project = '{}'".format(project_old)
                     else:
-                        dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype not in ({}) {} AND {}".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1], recently_updated_for_jql, processing_jira_jql)
-                        dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND not issuetype in ({}) AND {}".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1], processing_jira_jql)
-                    jql_dependencies = "project = '{}' AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
-                                       "(project = '{}' AND issueFunction in subtasksOf(\"{}\")) OR " \
-                                       "(project = '{}' AND issueFunction in parentsOf(\"{}\")) OR " \
-                                       "(project = '{}' AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_old, project_old, dependencies_jql, project_old, dependencies_jql, project_old, dependencies_jql_parents, project_old, dependencies_jql)
-                    recently_updated_for_jql = recently_updated_for_jql + " OR ({}) ".format(jql_dependencies)
+                        dependency_main_jql = "project = '{}' AND issuetype not in ({})".format(project_old, str(skipped_issuetypes)[1:-1])
+                    jql_dependencies = "{} AND (issueFunction in epicsOf(\"{}\") OR issueFunction in subtasksOf(\"{}\") OR issueFunction in parentsOf(\"{}\") OR issueFunction in linkedIssuesOf(\"{}\"))".format(dependency_main_jql, dependencies_jql, dependencies_jql, dependencies_jql_parents, dependencies_jql)
+                if last_updated_days_check == 1:
+                    if including_dependencies_flag == 1:
+                        recently_updated_for_jql = " AND updated >= startOfDay(-{})".format(recently_updated_days)
+                        recently_updated_for_jql = recently_updated_for_jql + " OR ({}) ".format(jql_dependencies)
+                    else:
+                        if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+                            recently_updated_for_jql = " AND updated >= startOfDay(-{}) AND issuetype in ({})".format(recently_updated_days, str(processed_issuetypes)[1:-1])
+                        elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+                            recently_updated_for_jql = " AND updated >= startOfDay(-{})".format(recently_updated_days)
+                        else:
+                            recently_updated_for_jql = " AND updated >= startOfDay(-{}) AND issuetype not in ({})".format(recently_updated_days, str(skipped_issuetypes)[1:-1])
                 processing_jira_jql = "project = {} AND ({}) {}".format(project_old, processing_jira_jql, recently_updated_for_jql)
                 print("[INFO] The issues would be processed based on JQL: '{}'".format(processing_jira_jql))
                 jql_details = processing_jira_jql
@@ -4955,12 +4949,12 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             if start_jira_key == max_id:
                 jql_details = jql_details.replace('<', '<=')
         else:
-            if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-                jql_details = 'project = {} AND key >= {} AND issuetype in ({}) {} order by key ASC'.format(project_old, start_jira_key, str(processed_issuetypes)[1:-1], recently_updated)
-            elif len(skipped_issuetypes) == 0:
-                jql_details = 'project = {} AND key >= {} {} order by key ASC'.format(project_old, start_jira_key, recently_updated)
+            if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+                jql_details = "project = {} AND key >= {} AND issuetype in ({}) {}".format(project_old, start_jira_key, str(processed_issuetypes)[1:-1], recently_updated)
+            elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+                jql_details = "project = {} AND key >= {} {}".format(project_old, start_jira_key, recently_updated)
             else:
-                jql_details = 'project = {} AND key >= {} AND issuetype not in ({}) {} order by key ASC'.format(project_old, start_jira_key, str(skipped_issuetypes)[1:-1], recently_updated)
+                jql_details = "project = {} AND key >= {} AND issuetype not in ({}) {}".format(project_old, start_jira_key, str(skipped_issuetypes)[1:-1], recently_updated)
         get_issues_by_jql(jira_old, jql=jql_details, types=True)
     
     # Calculating Minimal and Maximal issues to be migrated
@@ -5119,8 +5113,8 @@ def process_one_template(mapping_file):
     global previous_JIRA_BASE_URL_NEW, skip_new_process, old_transitions, old_statuses, status_mappings, teams
     global field_value_mappings, link_mappings, old_sub_tasks, new_transitions, new_statuses, new_issues_ids
     global old_sprints, new_sprints, old_fields_ids_mapping, total_data, issues_lst, failed_issues, processed_issuetypes
-    global already_processed_json_importer_issues, already_processed_users, non_migrated_set, migrated_issues_lst
-    global skipped_issuetypes, retry_logic_flag
+    global already_processed_json_importer_issues, already_processed_users, migrated_issues_lst
+    global skipped_issuetypes, retry_logic_flag, override_template_flag
     
     start_time = time.time()
     
@@ -5135,7 +5129,7 @@ def process_one_template(mapping_file):
     old_sprints, new_sprints, old_fields_ids_mapping, total_data, items_lst = ({}, {}, {}, {}, {})
     issue_details_new, new_transitions, new_statuses, new_issues_ids, skipped_issuetypes = ({}, {}, {}, {}, [])
     issues_lst, already_migrated_set, already_processed_json_importer_issues = (set(), set(), set())
-    already_processed_users, non_migrated_set, failed_issues, processed_issuetypes = (set(), set(), set(), [])
+    already_processed_users, failed_issues, processed_issuetypes = (set(), set(), [])
     
     # Loading data from Excel
     read_excel(file_path=mapping_file.strip())
@@ -5330,27 +5324,20 @@ def process_one_template(mapping_file):
     
     # Calculating total Number of Issues in OLD JIRA Project
     if process_only_last_updated_date_flag == 1:
-        if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-            recently_updated = " AND issuetype in ({}) AND updated >= startOfDay(-{})".format(str(processed_issuetypes)[1:-1], recently_updated_days)
-        elif len(skipped_issuetypes) == 0:
+        recently_updated = ''
+        if last_updated_days_check == 1:
             recently_updated = " AND updated >= startOfDay(-{})".format(recently_updated_days)
-        else:
-            recently_updated = " AND issuetype not in ({}) AND updated >= startOfDay(-{})".format(str(skipped_issuetypes)[1:-1], recently_updated_days)
         max_processing_key = find_max_id(max_processing_key, jira_old, project_old)
         start_jira_key = find_min_id(start_jira_key, jira_old, project_old)
-        if len(skipped_issuetypes) >= len(processed_issuetypes) and len(skipped_issuetypes) != 0:
-            dependencies_jql = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1], recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype in ({})".format(project_old, start_jira_key, max_processing_key, str(processed_issuetypes)[1:-1])
-        elif len(skipped_issuetypes) == 0:
-            dependencies_jql = "project = '{}' AND key >= {} AND key < {} {}".format(project_old, start_jira_key, max_processing_key, recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {}".format(project_old, start_jira_key, max_processing_key)
+        dependencies_jql = " key >= {} AND key < {} {}".format(start_jira_key, max_processing_key, recently_updated)
+        dependencies_jql_parents = " key >= {} AND key < {}".format(start_jira_key, max_processing_key)
+        if len(skipped_issuetypes) >= len(processed_issuetypes) or (len(skipped_issuetypes) == 0 and override_template_flag == 1):
+            dependency_main_jql = "project = '{}' AND issuetype in ({})".format(project_old, str(processed_issuetypes)[1:-1])
+        elif len(skipped_issuetypes) == 0 and override_template_flag == 0:
+            dependency_main_jql = "project = '{}'".format(project_old)
         else:
-            dependencies_jql = "project = {} AND key >= {} AND key < {} AND issuetype not in ({}) {}".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1], recently_updated)
-            dependencies_jql_parents = "project = '{}' AND key >= {} AND key < {} AND issuetype not in ({})".format(project_old, start_jira_key, max_processing_key, str(skipped_issuetypes)[1:-1])
-        jql_dependencies = "project = {} AND (project = '{}' AND issueFunction in epicsOf(\"{}\") OR " \
-                           "(project = {} AND issueFunction in subtasksOf(\"{}\")) OR " \
-                           "(project = {} AND issueFunction in parentsOf(\"{}\")) OR " \
-                           "(project = {} AND issueFunction in linkedIssuesOf(\"{}\")))".format(project_old, project_old, dependencies_jql, project_old, dependencies_jql, project_old, dependencies_jql_parents, project_old, dependencies_jql)
+            dependency_main_jql = "project = '{}' AND issuetype not in ({})".format(project_old, str(skipped_issuetypes)[1:-1])
+        jql_dependencies = "{} AND (issueFunction in epicsOf(\"{}\") OR issueFunction in subtasksOf(\"{}\")) OR issueFunction in parentsOf(\"{}\")) OR issueFunction in linkedIssuesOf(\"{}\"))".format(dependency_main_jql, dependencies_jql, dependencies_jql, dependencies_jql_parents, dependencies_jql)
         recently_updated = recently_updated + " OR ({}) ".format(jql_dependencies)
     
     while True:
@@ -5491,9 +5478,9 @@ def main_program():
     except:
         shifted_key_val = 1000
     if bulk_processing_flag == 0:
-        mapping_file = file.get().split('.xls')[0] + '.xlsx'
+        mapping_file = file.get().strip().split('.xls')[0] + '.xlsx'
     
-    recently_updated_days = days.get()
+    recently_updated_days = days.get().strip()
     try:
         recently_updated_days = str(int(recently_updated_days))
     except:
@@ -6274,6 +6261,9 @@ def change_validate_template(*args):
     check_template_flag = check_validate_template.get()
     if check_template_flag == 0:
         skip_existing_issuetypes_validation_flag = 0
+        skip_existing_issuetypes_validation.set(skip_existing_issuetypes_validation_flag)
+    else:
+        skip_existing_issuetypes_validation_flag = 1
         skip_existing_issuetypes_validation.set(skip_existing_issuetypes_validation_flag)
 
 
