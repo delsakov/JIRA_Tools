@@ -59,6 +59,7 @@ JIRA_status_api = '/rest/api/2/status'
 JIRA_fields_api = '/rest/api/2/field'
 JIRA_attachment_api = '/rest/api/2/attachment/'
 JIRA_users_api = '/rest/api/2/user?username={}'
+JIRA_versions_api = '/rest/api/2/version/{}'
 JIRA_create_users_api = '/rest/api/2/user'
 JIRA_imported_api = '/rest/jira-importers-plugin/1.0/importer/json'
 JIRA_labelit_api = '/rest/labelit/1.0/items'
@@ -354,16 +355,28 @@ def read_excel(file_path=mapping_file, columns=0, rows=0, start_row=2):
                                 fields_mappings[d[0]] = {d[2]: [d[1]]}
                             if d[2] == '' and verbose_logging == 1:
                                 print("[WARNING] The mapping of '{}' field for '{}' Issuetype not found. Field values will be dropped.".format(d[1], d[0]))
+                    elif excel_sheet_name == 'Priority':
+                        try:
+                            if mapping_type == 0:
+                                value_mappings[d[0]] = d[1].split(',')
+                            else:
+                                if d[1] not in value_mappings.keys():
+                                    value_mappings[d[1]] = d[0].split(',')
+                                else:
+                                    value_mappings[d[1]].extend(d[0].split(','))
+                        except:
+                            print("[ERROR] Data on the sheet '{}' is invalid, Skipping...".format(excel_sheet_name))
+                            continue
                     else:
-                        if len(d) <= 2 or excel_sheet_name == 'Priority':
+                        if len(d) <= 2:
                             try:
                                 if mapping_type == 0:
-                                    value_mappings[d[0]] = d[1].split(',')
+                                    value_mappings[d[0]] = d[1].split(';')
                                 else:
                                     if d[1] not in value_mappings.keys():
-                                        value_mappings[d[1]] = d[0].split(',')
+                                        value_mappings[d[1]] = d[0].split(';')
                                     else:
-                                        value_mappings[d[1]].extend(d[0].split(','))
+                                        value_mappings[d[1]].extend(d[0].split(';'))
                             except:
                                 print("[ERROR] Data on the sheet '{}' is invalid, Skipping...".format(excel_sheet_name))
                                 continue
@@ -1476,11 +1489,24 @@ def migrate_versions():
     new_versions = jira_new.project_versions(project_new)
     
     def update_version(data):
-        global jira_new, verbose_logging, max_retries, default_max_retries
+        global jira_new, verbose_logging, max_retries, default_max_retries, auth, JIRA_BASE_URL_NEW, JIRA_versions_api
+        global headers, verify
         
-        name, project, description, release_date, start_date, archieved, released = data
+        id, name, project, description, release_date, start_date, archived, released = data
         try:
-            jira_new.create_version(name, project, description=description, releaseDate=release_date, startDate=start_date, archived=archieved, released=released)
+            if id is not None:
+                project_id = jira_new.project(project_new).id
+                url = JIRA_BASE_URL_NEW + JIRA_versions_api.format(id)
+                body = json.dumps({"projectId": project_id,
+                                   "name": name,
+                                   "description": description,
+                                   "releaseDate": release_date,
+                                   "startDate": start_date,
+                                   "released": released,
+                                   "archived": archived})
+                r = requests.put(url, data=body, auth=auth, headers=headers, verify=verify)
+            else:
+                jira_new.create_version(name, project, description=description, releaseDate=release_date, startDate=start_date, archived=archived, released=released)
             return (0, data)
         except Exception as e:
             print('Exception: {}'.format(e.text))
@@ -1489,23 +1515,46 @@ def migrate_versions():
             return (1, data)
     
     versions = []
-    new_versions_lst = []
+    new_versions_dict = {}
     for new_version in new_versions:
-        new_versions_lst.append(new_version.name)
+        id, description, release_date, start_date, archived, released = (None, None, None, None, None, None)
+        if hasattr(new_version, 'id'):
+            id = new_version.id
+        if hasattr(new_version, 'description'):
+            description = new_version.description
+        if hasattr(new_version, 'releaseDate'):
+            release_date = new_version.releaseDate
+        if hasattr(new_version, 'startDate'):
+            start_date = new_version.startDate
+        if hasattr(new_version, 'archived'):
+            archived = new_version.archived
+        if hasattr(new_version, 'released'):
+            released = new_version.released
+        new_versions_dict[new_version.name.strip().upper()] = {"id": id,
+                                                               "released": released,
+                                                               "archived": archived,
+                                                               "startDate": start_date,
+                                                               "releaseDate": release_date,
+                                                               "description": description,
+                                                               }
     for version in old_versions:
-        description, release_date, start_date, archieved, released = (None, None, None, None, None)
-        if version.name.strip().upper() not in [version.upper() for version in new_versions_lst]:
-            if hasattr(version, 'description'):
-                description = version.description
-            if hasattr(version, 'releaseDate'):
-                release_date = version.releaseDate
-            if hasattr(version, 'startDate'):
-                start_date = version.startDate
-            if hasattr(version, 'archieved'):
-                archieved = version.archieved
-            if hasattr(version, 'released'):
-                released = version.released
-            versions.append((version.name.strip(), project_new, description, release_date, start_date, archieved, released))
+        description, release_date, start_date, archived, released = (None, None, None, None, None)
+        name = version.name.strip().upper()
+        if hasattr(version, 'description'):
+            description = version.description
+        if hasattr(version, 'releaseDate'):
+            release_date = version.releaseDate
+        if hasattr(version, 'startDate'):
+            start_date = version.startDate
+        if hasattr(version, 'archived'):
+            archived = version.archived
+        if hasattr(version, 'released'):
+            released = version.released
+        
+        if name not in [n_version.upper() for n_version in new_versions_dict.keys()]:
+            versions.append((None, version.name.strip(), project_new, description, release_date, start_date, archived, released))
+        elif released != new_versions_dict[name]["released"] or archived != new_versions_dict[name]["archived"] or release_date != new_versions_dict[name]["releaseDate"]:
+            versions.append((new_versions_dict[name]["id"], version.name.strip(), project_new, description, release_date, start_date, archived, released))
     
     max_retries = default_max_retries
     threads_processing(update_version, versions)
@@ -3601,64 +3650,42 @@ def get_value(old_field, new_field, old_issue, new_issuetype, preprocess=False):
                 old_value = value_child
     elif issue_details_old[old_issuetype][old_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
         value = get_team_name(value)
+    elif issue_details_old[old_issuetype][old_field]['custom type'] in ['multiversion', 'multiuserpicker', 'multiselect', 'multicheckboxes'] and value is not None:
+        value = [item.value if hasattr(item, "value") else item.name if hasattr(item, "name") else item for item in value]
     old_value = value
+    
     if issue_details_old[old_issuetype][old_field]['type'] in ['string', 'number', 'array'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
         old_value = value
         if issue_details_new[new_issuetype][new_field]['type'] == 'option-with-child':
-            value = get_new_value_from_mapping(value, new_field)
+            value = get_new_value_from_mapping(value[0] if type(value) == list else value, new_field)
             try:
                 value_value = value.split(' --> ')[0]
                 value_child = value.split(' --> ')[1]
                 old_value = {"value": value_value, "child": {"value": value_child}}
             except:
-                pass
-        elif issue_details_old[old_issuetype][old_field]['custom type'] in ['multiversion', 'multiuserpicker', 'multiselect'] and old_value is not None:
-            old_value = [item for item in old_value]
-        elif issue_details_old[old_issuetype][old_field]['custom type'] in ['multicheckboxes'] and old_value is not None:
-            old_value = [item.value for item in old_value]
+                old_value = value
         elif issue_details_new[new_issuetype][new_field]['custom type'] == 'labels' or new_field == 'Labels':
-            old_value = str(old_value).replace(' ', '_')
+            old_value = str(old_value).replace(' ', '_').replace('\n', '_').replace('\t', '_')
     elif issue_details_old[old_issuetype][old_field]['type'] in ['option', 'user'] and issue_details_new[new_issuetype][new_field]['custom type'] != 'com.atlassian.teams:rm-teams-custom-field-team':
         if issue_details_old[old_issuetype][old_field]['custom type'] in ['userpicker'] and old_value is not None:
             try:
-                old_value = [item for item in old_value]
+                old_value = [item.value if hasattr(item, "value") else item.name if hasattr(item, "name") else item for item in old_value]
             except:
                 old_value = [old_value]
         else:
-            try:
-                old_value = value.value
-            except:
-                try:
-                    old_value = value.name
-                except:
-                    old_value = value
+            old_value = value.value if hasattr(value, "value") else value.name if hasattr(value, "name") else value
     elif issue_details_new[new_issuetype][new_field]['custom type'] == 'com.atlassian.teams:rm-teams-custom-field-team':
         if new_issuetype in sub_tasks.keys():
             return None
         else:
             team_value = None
             try:
-                if type(old_value) != str:
-                    team_value = old_value[0]
-                else:
-                    team_value = old_value
-                if type(team_value) != str:
-                    try:
-                        team_value = old_value[0].value
-                    except:
-                        team_value = old_value[0].name
+                team_value_obj = old_value[0] if type(old_value) != str else old_value
+                team_value = team_value_obj.value if hasattr(team_value_obj, "value") else team_value_obj.name if hasattr(team_value_obj, "name") else team_value_obj
+                if type(team_value) == list:
+                    team_value = team_value[0]
             except:
-                try:
-                    team_value = old_value
-                    if type(team_value) != str:
-                        try:
-                            team_value = old_value.value
-                        except:
-                            team_value = old_value.name
-                except:
-                    old_value = None
-            if type(team_value) == list:
-                team_value = team_value[0]
+                old_value = None
             if preprocess is False:
                 teams_thread_lock.acquire()
                 team = '' if old_value is None else get_team_id(team_value)
@@ -3737,7 +3764,7 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
             for v in value:
                 if hasattr(v, 'name'):
                     if ((issue_details_old[old_issuetype][new_field]['type'] == 'user' and check_user(v))
-                        or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
+                            or issue_details_old[old_issuetype][new_field]['type'] != 'user'):
                         cont_value.append({"name": get_new_value_from_mapping(v.name, new_field)})
                 elif hasattr(v, 'value'):
                     if issue_details_new[issuetype][new_field]['custom type'] == 'multiselect':
@@ -4049,10 +4076,10 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     if old_issuetype in fields_mappings.keys():
         for n_field in fields_mappings[old_issuetype].keys():
             if ((issuetype in sub_tasks.keys() and n_field in ['Sprint', 'Parent Link', 'Team'])
-                or n_field == ''
-                or n_field not in issue_details_new[issuetype].keys()
-                or n_field in jira_system_skip_fields
-                or (n_field in jira_system_fields and n_field not in additional_mapping_fields)):
+                    or n_field == ''
+                    or n_field not in issue_details_new[issuetype].keys()
+                    or n_field in jira_system_skip_fields
+                    or (n_field in jira_system_fields and n_field not in additional_mapping_fields)):
                 continue
             data_value = None
             o_field_value = get_old_field(n_field, data_val=data_val)
@@ -4349,14 +4376,13 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
     try:
         parent_link_id_to_add = data_val[issue_details_new[issuetype]['Parent Link']['id']]
         try:
-            existing_parent_link = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
+            existent_parent = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
         except:
-            existing_parent_link = None
+            existent_parent = None
         if issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and parent_link_id_to_add is not None:
             try:
                 parent_issue = jira_old.issue(get_shifted_key(parent_link_id_to_add.replace(project_new, project_old), reversed=True))
-                existent_parent = eval('new_issue.fields.' + issue_details_new[issuetype]['Parent Link']['id'])
-                if parent_issue.key == get_shifted_key(existent_parent.replace(project_new, project_old), reversed=True):
+                if existent_parent is not None and parent_issue.key == get_shifted_key(existent_parent.replace(project_new, project_old), reversed=True):
                     data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
                 elif parent_link_id_to_add != existent_parent and existent_parent is not None:
                     if json_importer_flag == 1:
@@ -4372,9 +4398,9 @@ def update_new_issue_type(old_issue, new_issue, issuetype):
                     print("[WARNING] Parent '{}' can't be processed for '{}'. Dropped.".format(parent_link_id_to_add, new_issue.key))
                     data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
             except:
-                print("[WARNING] Parent Link for '{}' can't be found in the same JIRA instance / project.".format(new_issue.key))
+                print("[WARNING] Parent Link '{}' for '{}' can't be found in the same JIRA instance / project.".format(parent_link_id_to_add, new_issue.key))
                 data_val.pop(issue_details_new[issuetype]['Parent Link']['id'], None)
-        elif issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and parent_link_id_to_add is None and existing_parent_link is not None:
+        elif issue_details_new[issuetype]['Parent Link']['id'] in data_val.keys() and parent_link_id_to_add is None and existent_parent is not None:
             delete_issue(new_issue.key)
             return process_issue(old_issue.key)
     except:
@@ -5013,24 +5039,26 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
                 jql_refresh_migrated = "project = {} ".format(project_new)
                 get_issues_by_jql(jira_new, jql=jql_refresh_migrated, types=True, non_migrated=True)
     elif skip_migrated_flag == 1 or force_update_flag == 1 or including_dependencies_flag == 1 or process_only_last_updated_date_flag == 1:
+        print("[START] Checking for previously NON-COMPLETED issues. They would be re-processed.")
         jql_non_migrated = "project = {} AND labels = MIGRATION_NOT_COMPLETE".format(project_new)
+        non_migrated_count = jira_old.search_issues(jql_non_migrated, startAt=0, maxResults=1, json_result=True)['total']
+        print("[END] Total '{}' previously NON-COMPLETED issues will be added based on JQL: '{}'.".format(non_migrated_count, jql_non_migrated))
         get_issues_by_jql(jira_new, jql=jql_non_migrated, types=True, non_migrated=True)
+        print("")
     
     # Check already migrated issues
     if skip_migrated_flag == 1 and process_only_last_updated_date_flag == 0:
+        print("[START] Checking for already migrated issues. They will be skipped.")
         start_already_migrated_time = time.time()
         already_migrated_set = set()
         try:
-            start_new_jira_key = find_min_id(get_shifted_key(start_jira_key.replace(project_old, project_new)), jira_new, project_new)
-            max_new_processing_key = find_max_id(get_shifted_key(max_processing_key.replace(project_old, project_new)), jira_new, project_new)
-            print("[START] Checking for already migrated issues. They will be skipped.")
-            jql_last_migrated = "project = '{}' AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY) AND key >= {} AND key <= {}".format(project_new, start_new_jira_key, max_new_processing_key)
+            jql_last_migrated = "project = {} AND (labels not in ('MIGRATION_NOT_COMPLETE') OR labels is EMPTY)".format(project_new)
             get_issues_by_jql(jira_new, jql_last_migrated, migrated=True, max_result=0)
-            print("[END] Already migrated issues have been calculated. Number: '{}'".format(len(already_migrated_set)))
-            print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time))
-            print("")
-        except:
-            pass
+        except Exception as e:
+            print("[WARNING] Already migrated issues can't be processed due to: '{}'".format(e))
+        print("[END] Already migrated issues have been calculated. Number: '{}'.".format(len(already_migrated_set)))
+        print("[INFO] Already migrated issues retrieved in '{}' seconds.".format(time.time() - start_already_migrated_time))
+        print("")
     
     if reprocess is True:
         already_migrated_set -= failed_issues
@@ -5126,9 +5154,15 @@ def migration_process(start_jira_key, max_processing_key, max_id, reprocess=Fals
             if processing_jql_lst is None:
                 processing_jql_lst = ['']
             for processing_jql in processing_jql_lst:
-                dependencies_jql = "project = {} {} {}".format(project_old, recently_updated, processing_jql)
-                main_count = jira_old.search_issues(dependencies_jql, startAt=0, maxResults=1, json_result=True)['total']
-                print("[INFO] Total '{}' issues would be added based on JQL: '{}'.".format(main_count, dependencies_jql))
+                if processing_jql == '':
+                    dependencies_jql = "project = {} {} {}".format(project_old, recently_updated, processing_jql)
+                    main_jql = "project = {} {} {} {}".format(project_old, recently_updated, processing_jql, supported_issuetypes)
+                else:
+                    dependencies_jql = "project = {} {} AND {}".format(project_old, recently_updated, processing_jql)
+                    main_jql = "project = {} {} AND {} {}".format(project_old, recently_updated, processing_jql, supported_issuetypes)
+                main_count = jira_old.search_issues(main_jql, startAt=0, maxResults=1, json_result=True)['total']
+                print("[INFO] Total '{}' issues would be added based on JQL: '{}'.".format(main_count, main_jql))
+                get_issues_by_jql(jira_old, jql=main_jql, types=True)
                 print("")
                 print("[INFO] Dependencies would be processed, as Epics, SubTasks, Parents and Linked issues...")
                 if skip_migrated_flag == 1:
@@ -5369,7 +5403,10 @@ def process_one_template(mapping_file):
         read_default_mappings_excel(file_path=default_configuration_file.strip())
     
     # Create jira connection details
+    print("[START] JIRA connection is checking...")
     get_jira_connection()
+    print("[END] Connection with JIRA has been successfully established.")
+    print("")
     
     # Check Global Admin Access
     if (json_importer_flag == 1 or multiple_json_data_processing == 1) and same_new_project == 0:
@@ -5377,7 +5414,7 @@ def process_one_template(mapping_file):
     if json_importer_flag == 1 and bulk_processing_flag == 0:
         check_target_project()
     
-    print("[START] Fields configuration downloading from Source '{}' and Target '{}' projects".format(project_old, project_new))
+    print("[START] Fields configuration downloading from Source '{}' and Target '{}' projects.".format(project_old, project_new))
     
     try:
         issue_details_old = get_fields_list_by_project(jira_old, project_old, old=True)
