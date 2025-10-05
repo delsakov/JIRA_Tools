@@ -1,5 +1,4 @@
 # This Migration Tool has been created by Dmitry Elsakov
-# Special thanks for the bright ideas and continues testing to Shankarnarayan, Vaikom
 # The main source code has been created over weekends and distributed over GPL-3.0 License
 # The license details could be found here: https://github.com/delsakov/JIRA_Tools/
 # Please do not change notice above and copyright
